@@ -204,7 +204,11 @@ export async function saveServiceConfig(args: {
   }
 
   const detectedModel = probe.selectedModel ?? args.detectedModel;
-  const savedModels = mergeServiceDetailModels(probe.models, args.configuredModels);
+  // When the page supplies configuredModels, it is the user's explicit catalog.
+  // An empty array must remain empty so removing every discovered model is persisted.
+  const savedModels = mergeServiceDetailModels(
+    args.configuredModels === undefined ? probe.models : args.configuredModels,
+  );
   const detectedConfig = probe.detected ?? null;
   const savedApiFormat = detectedConfig?.apiFormat ?? args.apiFormat;
   const savedStream = typeof detectedConfig?.stream === "boolean" ? detectedConfig.stream : args.stream;

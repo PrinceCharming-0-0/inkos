@@ -291,6 +291,87 @@ describe("saveServiceConfig", () => {
     });
   });
 
+  it("persists the edited model catalog instead of restoring removed discovered models", async () => {
+    const bodies: unknown[] = [];
+    const fetchJsonImpl = vi.fn(async (path: string, init?: { body?: string }) => {
+      if (init?.body) bodies.push(JSON.parse(init.body));
+      if (path === "/services/openai/secret") return { ok: true };
+      if (path === "/services/config") return { ok: true };
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    const result = await saveServiceConfig({
+      effectiveServiceId: "openai",
+      serviceId: "openai",
+      isCustom: false,
+      resolvedCustomName: "",
+      apiKey: "sk-live",
+      baseUrl: "",
+      apiFormat: "chat",
+      stream: true,
+      temperature: "0.7",
+      detectedModel: "gpt-5.5",
+      configuredModels: [{ id: "gpt-5.5" }],
+      verifiedProbe: {
+        apiKey: "sk-live",
+        baseUrl: "",
+        apiFormat: "chat",
+        stream: true,
+        models: [{ id: "gpt-5.5" }, { id: "gpt-4.1" }],
+        selectedModel: "gpt-5.5",
+        detected: { apiFormat: "chat", stream: true },
+      },
+      fetchJsonImpl: fetchJsonImpl as never,
+    });
+
+    expect(bodies[1]).toEqual({
+      service: "openai",
+      defaultModel: "gpt-5.5",
+      services: [
+        { service: "openai", temperature: 0.7, apiFormat: "chat", stream: true, models: ["gpt-5.5"] },
+      ],
+    });
+    expect(result.status).toEqual({ state: "connected", models: [{ id: "gpt-5.5" }] });
+  });
+
+  it("persists an explicitly empty edited model catalog", async () => {
+    const bodies: unknown[] = [];
+    const fetchJsonImpl = vi.fn(async (path: string, init?: { body?: string }) => {
+      if (init?.body) bodies.push(JSON.parse(init.body));
+      if (path === "/services/openai/secret") return { ok: true };
+      if (path === "/services/config") return { ok: true };
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    await saveServiceConfig({
+      effectiveServiceId: "openai",
+      serviceId: "openai",
+      isCustom: false,
+      resolvedCustomName: "",
+      apiKey: "sk-live",
+      baseUrl: "",
+      apiFormat: "chat",
+      stream: true,
+      temperature: "0.7",
+      detectedModel: "gpt-5.5",
+      configuredModels: [],
+      verifiedProbe: {
+        apiKey: "sk-live",
+        baseUrl: "",
+        apiFormat: "chat",
+        stream: true,
+        models: [{ id: "gpt-5.5" }],
+        selectedModel: "gpt-5.5",
+        detected: { apiFormat: "chat", stream: true },
+      },
+      fetchJsonImpl: fetchJsonImpl as never,
+    });
+
+    expect(bodies[1]).toMatchObject({
+      services: [expect.objectContaining({ models: [] })],
+    });
+  });
+
   it("does not persist secrets/config when validation fails", async () => {
     const calls: string[] = [];
     const fetchJsonImpl = vi.fn(async (path: string, init?: { body?: string }) => {

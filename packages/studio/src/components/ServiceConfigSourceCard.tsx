@@ -254,7 +254,11 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
           <div className="text-foreground">
             {syncResult.wrote
               ? tr("同步已完成", "Sync completed")
-              : tr("同步预览", "Sync preview")}
+              : syncResult.conflicts.length > 0
+                ? tr("同步预览发现冲突", "Sync preview found conflicts")
+                : syncResult.changed
+                  ? tr("同步预览", "Sync preview")
+                  : tr("配置已一致，无需写入", "Configuration is already in sync; nothing was written")}
           </div>
           {syncResult.conflicts.length > 0 ? (
             <div className="text-rose-500">
@@ -268,8 +272,15 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
                 .map((change) => change.field)
                 .join(", ")}
             </div>
+          ) : syncResult.changed ? (
+            <div>
+              {tr("变更字段：", "Changed fields:")} {syncResult.changes
+                .filter((change) => change.action !== "unchanged")
+                .map((change) => change.field)
+                .join(", ")}
+            </div>
           ) : (
-            <div>{tr("没有可同步的非敏感字段。", "No non-sensitive fields need synchronization.")}</div>
+            <div>{tr("两边的非敏感 LLM 配置已经一致。", "The non-sensitive LLM configuration is already identical on both sides.")}</div>
           )}
           {syncResult.secret.sourcePresent || syncResult.secret.targetPresent ? (
             <div>{tr("API Key 未被同步，原有 secret 状态保持不变。", "API keys were not synchronized; existing secret state was unchanged.")}</div>

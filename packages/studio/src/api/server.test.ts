@@ -1190,6 +1190,43 @@ describe("createStudioServer daemon lifecycle", () => {
     ]);
   });
 
+  it("uses an explicit persisted bank model catalog without restoring static models", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        ...projectConfig.llm,
+        services: [{ service: "moonshot", models: ["kimi-k3-preview"] }],
+      },
+    }, null, 2), "utf-8");
+    loadSecretsMock.mockResolvedValue({ services: { moonshot: { apiKey: "sk-moonshot" } } });
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/services/models");
+    const body = await response.json() as { groups: Array<{ service: string; models: Array<{ id: string }> }> };
+
+    expect(body.groups.find((group) => group.service === "moonshot")?.models.map((model) => model.id))
+      .toEqual(["kimi-k3-preview"]);
+  });
+
+  it("preserves an explicitly empty persisted bank model catalog", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        ...projectConfig.llm,
+        services: [{ service: "moonshot", models: [] }],
+      },
+    }, null, 2), "utf-8");
+    loadSecretsMock.mockResolvedValue({ services: { moonshot: { apiKey: "sk-moonshot" } } });
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/services/models");
+    const body = await response.json() as { groups: Array<{ service: string; models: Array<{ id: string }> }> };
+
+    expect(body.groups.find((group) => group.service === "moonshot")?.models).toEqual([]);
+  });
+
   it("merges persisted discovered/user models ahead of the static fallback catalog", async () => {
     await writeFile(join(root, "inkos.json"), JSON.stringify({
       ...projectConfig,
@@ -1235,6 +1272,35 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(response.status).toBe(200);
     const body = await response.json() as { groups: Array<{ service: string; models: Array<{ id: string }> }> };
     expect(body.groups[0]?.models.map((m) => m.id)).toEqual(["gemini-2.5-flash"]);
+  });
+
+  it("uses an explicit persisted custom model catalog without probing all upstream models", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        ...projectConfig.llm,
+        services: [{
+          service: "custom",
+          name: "内网GPT",
+          baseUrl: "https://llm.internal.corp/v1",
+          models: ["selected-model"],
+        }],
+      },
+    }, null, 2), "utf-8");
+    loadSecretsMock.mockResolvedValue({ services: { "custom:内网GPT": { apiKey: "sk-corp" } } });
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/services/models/custom");
+
+    await expect(response.json()).resolves.toEqual({
+      groups: [{
+        service: "custom:内网GPT",
+        label: "内网GPT",
+        models: [{ id: "selected-model", name: "selected-model" }],
+      }],
+    });
+    expect(probeModelsFromUpstreamMock).not.toHaveBeenCalled();
   });
 
   it("returns custom model groups through the slow probe path", async () => {

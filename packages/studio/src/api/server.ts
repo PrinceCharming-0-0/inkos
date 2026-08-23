@@ -3916,8 +3916,12 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       const staticModels = ep.models
         .filter((m) => m.enabled !== false)
         .filter((m) => isTextChatModelId(m.id));
-      const configuredModels = configuredById.get(ep.id)?.models ?? [];
-      const models = mergeServiceModelIds(staticModels.map((model) => model.id), configuredModels)
+      const configuredEntry = configuredById.get(ep.id);
+      const configuredModels = configuredEntry?.models ?? [];
+      const modelIds = configuredEntry?.models !== undefined
+        ? configuredModels
+        : staticModels.map((model) => model.id);
+      const models = mergeServiceModelIds(modelIds)
         .map((id) => {
           const known = staticModels.find((model) => model.id.toLowerCase() === id.toLowerCase());
           return {
@@ -3948,15 +3952,18 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         id: `custom:${s.name ?? "Custom"}`,
         baseUrl: s.baseUrl ?? "",
         label: s.name ?? "Custom",
+        ...(s.models !== undefined ? { models: s.models } : {}),
       }))
       .filter((s) => s.baseUrl && Boolean(secrets.services[s.id]?.apiKey));
 
     const groups = await Promise.all(customs.map(async (s) => ({
       service: s.id,
       label: s.label,
-      models: filterTextChatModels(
-        await probeModelsFromUpstream(s.baseUrl, secrets.services[s.id].apiKey, 10_000),
-      ),
+      models: s.models !== undefined
+        ? s.models.map((id) => ({ id, name: id }))
+        : filterTextChatModels(
+          await probeModelsFromUpstream(s.baseUrl, secrets.services[s.id].apiKey, 10_000),
+        ),
     })));
 
     return c.json({ groups });
@@ -3969,6 +3976,10 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const apiKey = c.req.query("apiKey") || secrets.services[service]?.apiKey || "";
     const configuredEntry = await resolveConfiguredServiceEntry(root, service);
     const configuredModels = configuredEntry?.models ?? [];
+
+    if (configuredEntry?.models !== undefined) {
+      return c.json({ models: configuredModels.map((id) => ({ id, name: id })) });
+    }
 
     const resolvedBaseUrl = await resolveConfiguredServiceBaseUrl(root, service);
     const baseService = isCustomServiceId(service) ? "custom" : service;

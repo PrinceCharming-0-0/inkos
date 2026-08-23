@@ -10,6 +10,7 @@ coverage/
 _notes/
 _tmp_*
 test-project/
+issues/
 .venv*/
 .gstack/
 .worktrees/

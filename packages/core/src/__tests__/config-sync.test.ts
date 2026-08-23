@@ -187,6 +187,39 @@ describe("syncLLMConfig", () => {
     expect(raw.llm.baseUrl).toBe("https://env.example/v1");
   });
 
+  it("treats matching custom service names as a no-op", async () => {
+    await createProject(
+      {
+        configSource: "studio",
+        service: "custom:Kiro(2)",
+        provider: "openai",
+        baseUrl: "https://api.zhongzhuan.win/v1",
+        model: "claude-opus-4-6",
+        apiFormat: "chat",
+        stream: true,
+        services: [{
+          service: "custom",
+          name: "Kiro(2)",
+          baseUrl: "https://api.zhongzhuan.win/v1",
+          models: ["claude-opus-4-6"],
+          temperature: 0.7,
+          apiFormat: "chat",
+          stream: true,
+        }],
+        defaultModel: "claude-opus-4-6",
+        temperature: 0.7,
+      },
+      "INKOS_LLM_SERVICE=\"custom:Kiro(2)\"\nINKOS_LLM_PROVIDER=openai\nINKOS_LLM_BASE_URL=https://api.zhongzhuan.win/v1\nINKOS_LLM_MODEL=claude-opus-4-6\nINKOS_LLM_API_FORMAT=chat\nINKOS_LLM_STREAM=true\nINKOS_LLM_TEMPERATURE=0.7\n",
+    );
+    const before = await readFile(join(root, ".env"), "utf-8");
+
+    const result = await syncLLMConfig(root, { direction: "inkos-to-env" });
+
+    expect(result.wrote).toBe(false);
+    expect(result.changed).toBe(false);
+    await expect(readFile(join(root, ".env"), "utf-8")).resolves.toBe(before);
+  });
+
   it("treats an already matching configuration as a no-op", async () => {
     await createProject(
       {
