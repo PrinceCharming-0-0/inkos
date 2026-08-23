@@ -228,6 +228,39 @@ inkos doctor --service minimaxCodingPlan --model MiniMax-M2.7
 
 `--service` 会从 provider bank 自动推导 baseUrl、协议和兼容策略；`--model` 必须属于最终 service，否则会直接报错，避免把 Kimi 模型发到 Gemini 这类错配问题。
 
+#### 显式同步 LLM 配置
+
+Studio 的 `inkos.json` 配置和 CLI 使用的项目 `.env` 可以保留为两份独立记录。需要同步时必须显式执行命令或在 Studio 模型配置页点击同步操作；启动、普通配置读取和普通模型调用不会自动改写任何配置文件。
+
+```bash
+# 预览 .env 中的非敏感 LLM 配置将如何写入 inkos.json
+inkos config sync --from env --preview
+
+# 执行 .env → inkos.json
+inkos config sync --from env
+
+# 预览或执行 inkos.json → .env
+inkos config sync --from inkos --preview
+inkos config sync --from inkos
+```
+
+同步的非敏感字段包括 service/provider、model、base URL、protocol、stream、temperature、thinking budget、proxy URL 和 `INKOS_LLM_EXTRA_*`。`.env` 中的注释、空行和非 LLM 环境变量会保留；`inkos.json` 中的通知、daemon、写作设置和 `modelOverrides` 等无关配置不会被覆盖。
+
+API Key、token 和其他 secret 不会通过同步写入 `inkos.json`，也不会从 `.inkos/secrets.json` 自动导出到 `.env`。Studio 的 API Key 继续保存在项目 `.inkos/secrets.json`；如果确实需要把 `.env` 中的 Key 保存为 Studio secret，请使用 Studio 中单独的“导入并保存密钥”操作。
+
+两边配置存在差异时，默认同步会阻止写入并报告冲突，不根据文件修改时间自动决定覆盖方向。先使用 `--preview` 检查变更，再明确指定策略：
+
+```bash
+# 明确使用源配置覆盖冲突字段
+inkos config sync --from env --on-conflict source
+inkos config sync --from inkos --on-conflict source
+
+# --force 等价于 --on-conflict source
+inkos config sync --from env --force
+```
+
+两边已经一致时同步是 no-op，不会产生无意义的文件变化。Studio 的模型配置页提供 `.env → Studio` 和 `Studio → .env` 的预览及执行按钮；旧的“导入并保存密钥”操作仍然单独处理 secret，不会把 API Key 写入 `inkos.json`。
+
 #### 方式三：多模型路由（可选）
 
 给不同 Agent 分配不同模型，按需平衡质量与成本：
@@ -594,6 +627,7 @@ Studio 里的「开放世界」和「分支互动」是交互式创作入口。�
 | `inkos config set-global`                   | 设置 CLI / daemon / 部署环境的全局 LLM env（`~/.inkos/.env`）                                         |
 | `inkos config show-global`                  | 查看全局配置                                                                                     |
 | `inkos config set/show`                     | 查看/更新项目配置                                                                                  |
+| `inkos config sync --from env|inkos`        | 显式同步 `.env` 与 `inkos.json` 的非敏感 LLM 配置（支持 `--preview`、`--on-conflict`、`--force`）                 |
 | `inkos config set-model <agent> <model>`    | 为指定 agent 设置模型覆盖（`--base-url`、`--provider`、`--api-key-env` 支持多 Provider 路由）                |
 | `inkos config remove-model <agent>`         | 移除 agent 模型覆盖（回退到默认）                                                                       |
 | `inkos config show-models`                  | 查看当前模型路由                                                                                   |

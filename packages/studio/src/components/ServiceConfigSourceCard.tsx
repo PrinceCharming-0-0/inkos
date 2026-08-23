@@ -13,6 +13,26 @@ interface EnvConfigSummary {
   hasApiKey: boolean;
 }
 
+interface SyncChange {
+  field: string;
+  action: "add" | "update" | "unchanged" | "conflict";
+  sourcePresent: boolean;
+  targetPresent: boolean;
+}
+
+interface SyncResult {
+  direction: "env-to-inkos" | "inkos-to-env";
+  wrote: boolean;
+  changed: boolean;
+  conflicts: string[];
+  changes: SyncChange[];
+  secret: { sourcePresent: boolean; targetPresent: boolean; changed: false };
+}
+
+interface SyncResponse {
+  result: SyncResult;
+}
+
 interface ServiceConfigPayload {
   services: Array<Record<string, unknown>>;
   defaultModel: string | null;
@@ -30,6 +50,8 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
   const [data, setData] = useState<ServiceConfigPayload | null>(null);
   const [saving, setSaving] = useState<ConfigSource | null>(null);
   const [importing, setImporting] = useState(false);
+  const [syncing, setSyncing] = useState<string | null>(null);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
@@ -62,6 +84,30 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
       setSaving(null);
     }
   };
+
+  const runSync = async (direction: SyncResult["direction"], preview: boolean) => {
+    const key = `${direction}:${preview ? "preview" : "write"}`;
+    setSyncing(key);
+    setError(null);
+    try {
+      const response = await fetchJson<SyncResponse>("/services/config/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ direction, preview, conflictPolicy: "error" }),
+      });
+      setSyncResult(response.result);
+      if (!preview && response.result.conflicts.length === 0) {
+        await load();
+        onChange?.();
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : tr("同步配置失败", "Failed to sync config"));
+    } finally {
+      setSyncing(null);
+    }
+  };
+
+  const syncBusy = saving !== null || importing || syncing !== null;
 
   const importEnvConfig = async () => {
     setImporting(true);
@@ -114,26 +160,58 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
             <span className="text-foreground"> {tr("使用服务页配置和 Studio 密钥", "uses service page config and Studio keys")}</span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => void switchSource("studio")}
-            disabled={saving !== null || importing || configSource === "studio"}
+            disabled={syncBusy || configSource === "studio"}
             className="rounded-lg border border-border/50 px-3 py-1.5 text-xs hover:bg-secondary/50 disabled:opacity-50"
           >
             {saving === "studio" ? tr("切换中…", "Switching…") : tr("使用 Studio 配置", "Use Studio config")}
           </button>
+          <button
+            type="button"
+            onClick={() => void runSync("env-to-inkos", true)}
+              disabled={syncBusy}
+              className="rounded-lg border border-border/50 px-3 py-1.5 text-xs hover:bg-secondary/50 disabled:opacity-50"
+            >
+              {syncing === "env-to-inkos:preview" ? tr("预览中…", "Previewing…") : tr("预览 .env → Studio", "Preview .env → Studio")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void runSync("env-to-inkos", false)}
+              disabled={syncBusy}
+              className="rounded-lg border border-border/50 bg-secondary/40 px-3 py-1.5 text-xs hover:bg-secondary/70 disabled:opacity-50"
+            >
+              {syncing === "env-to-inkos:write" ? tr("同步中…", "Syncing…") : tr("同步到 Studio", "Sync to Studio")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void runSync("inkos-to-env", true)}
+              disabled={syncBusy}
+              className="rounded-lg border border-border/50 px-3 py-1.5 text-xs hover:bg-secondary/50 disabled:opacity-50"
+            >
+              {syncing === "inkos-to-env:preview" ? tr("预览中…", "Previewing…") : tr("预览 Studio → .env", "Preview Studio → .env")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void runSync("inkos-to-env", false)}
+              disabled={syncBusy}
+              className="rounded-lg border border-border/50 bg-secondary/40 px-3 py-1.5 text-xs hover:bg-secondary/70 disabled:opacity-50"
+            >
+              {syncing === "inkos-to-env:write" ? tr("同步中…", "Syncing…") : tr("同步到 .env", "Sync to .env")}
+            </button>
+          </div>
           {envDetected && activeEnvSummary.hasApiKey ? (
             <button
               type="button"
               onClick={() => void importEnvConfig()}
-              disabled={saving !== null || importing}
+              disabled={syncBusy}
               className="rounded-lg border border-border/50 bg-secondary/40 px-3 py-1.5 text-xs hover:bg-secondary/70 disabled:opacity-50"
             >
-              {importing ? tr("导入中…", "Importing…") : tr("导入检测到的配置", "Import detected config")}
+              {importing ? tr("导入中…", "Importing…") : tr("导入并保存密钥", "Import and save key")}
             </button>
           ) : null}
-        </div>
       </div>
 
       {storedConfigSource === "env" ? (
@@ -170,6 +248,34 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
           )}
         </div>
       )}
+
+      {syncResult ? (
+        <div className="rounded-lg border border-border/30 bg-secondary/20 p-3 text-xs text-muted-foreground/80 space-y-1.5">
+          <div className="text-foreground">
+            {syncResult.wrote
+              ? tr("同步已完成", "Sync completed")
+              : tr("同步预览", "Sync preview")}
+          </div>
+          {syncResult.conflicts.length > 0 ? (
+            <div className="text-rose-500">
+              {tr("存在冲突，未写入：", "Conflicts, nothing was written:")} {syncResult.conflicts.join(", ")}
+            </div>
+          ) : null}
+          {syncResult.changes.filter((change) => change.action !== "unchanged").length > 0 ? (
+            <div>
+              {tr("变更字段：", "Changed fields:")} {syncResult.changes
+                .filter((change) => change.action !== "unchanged")
+                .map((change) => change.field)
+                .join(", ")}
+            </div>
+          ) : (
+            <div>{tr("没有可同步的非敏感字段。", "No non-sensitive fields need synchronization.")}</div>
+          )}
+          {syncResult.secret.sourcePresent || syncResult.secret.targetPresent ? (
+            <div>{tr("API Key 未被同步，原有 secret 状态保持不变。", "API keys were not synchronized; existing secret state was unchanged.")}</div>
+          ) : null}
+        </div>
+      ) : null}
 
       {error ? (
         <div className="text-xs text-rose-500">{error}</div>

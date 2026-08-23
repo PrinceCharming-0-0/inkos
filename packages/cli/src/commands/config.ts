@@ -2,11 +2,53 @@ import { Command } from "commander";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { findProjectRoot, log, logError, GLOBAL_CONFIG_DIR, GLOBAL_ENV_PATH } from "../utils.js";
-import { listModelsForService } from "@actalk/inkos-core";
+import { listModelsForService, syncLLMConfig, type LLMConfigSyncConflictPolicy, type LLMConfigSyncDirection } from "@actalk/inkos-core";
 import { formatListModelsEmpty, formatListModelsHeader, resolveCliLanguage } from "../localization.js";
 
 export const configCommand = new Command("config")
   .description("Manage project configuration");
+
+configCommand
+  .command("sync")
+  .description("Synchronize non-sensitive LLM config between project .env and inkos.json")
+  .requiredOption("--from <source>", "Sync direction: env or inkos")
+  .option("--preview", "Show the planned changes without writing files")
+  .option("--force", "Apply source values when source and target conflict")
+  .option("--on-conflict <policy>", "Conflict policy: error, source, or target", "error")
+  .action(async (opts: { from: string; preview?: boolean; force?: boolean; onConflict: string }) => {
+    try {
+      const direction: LLMConfigSyncDirection = opts.from === "env"
+        ? "env-to-inkos"
+        : opts.from === "inkos"
+          ? "inkos-to-env"
+          : (() => { throw new Error("--from must be either env or inkos"); })();
+      const conflictPolicy = (opts.force ? "source" : opts.onConflict) as LLMConfigSyncConflictPolicy;
+      if (conflictPolicy !== "error" && conflictPolicy !== "source" && conflictPolicy !== "target") {
+        throw new Error("--on-conflict must be error, source, or target.");
+      }
+
+      const result = await syncLLMConfig(findProjectRoot(), {
+        direction,
+        conflictPolicy,
+        write: !opts.preview,
+      });
+      const mode = opts.preview ? "Preview" : result.wrote ? "Synced" : "No changes";
+      log(`${mode}: ${direction === "env-to-inkos" ? ".env → inkos.json" : "inkos.json → .env"}`);
+      for (const change of result.changes.filter((item) => item.action !== "unchanged")) {
+        log(`  ${change.action}: ${change.field} (source ${change.sourcePresent ? "set" : "unset"}, target ${change.targetPresent ? "set" : "unset"})`);
+      }
+      if (result.secret.sourcePresent || result.secret.targetPresent) {
+        log("  secret: unchanged (API Key values are never synchronized by this command)");
+      }
+      if (result.conflicts.length > 0) {
+        logError(`Conflicts: ${result.conflicts.join(", ")}`);
+        if (conflictPolicy === "error") process.exitCode = 1;
+      }
+    } catch (error) {
+      logError(`Failed to sync LLM config: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+  });
 
 configCommand
   .command("set")

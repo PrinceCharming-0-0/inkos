@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadStudioTaskSnapshot, saveStudioTaskSnapshot, studioTaskSnapshotPath } from "./task-store.js";
@@ -402,6 +402,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     normalizeCoverBaseUrl: actual.normalizeCoverBaseUrl,
     resolveCoverProviderPreset: actual.resolveCoverProviderPreset,
     isApiKeyOptionalForEndpoint: actual.isApiKeyOptionalForEndpoint,
+    syncLLMConfig: actual.syncLLMConfig,
     loadSecrets: loadSecretsMock,
     saveSecrets: saveSecretsMock,
     getServiceApiKey: getServiceApiKeyMock,
@@ -1586,6 +1587,115 @@ describe("createStudioServer daemon lifecycle", () => {
         },
       },
     });
+  });
+
+  it("previews and explicitly executes non-sensitive env-to-Studio sync without changing secrets", async () => {
+    await writeFile(join(root, ".env"), [
+      "# keep this comment",
+      "INKOS_LLM_SERVICE=moonshot",
+      "INKOS_LLM_PROVIDER=openai",
+      "INKOS_LLM_BASE_URL=https://api.moonshot.cn/v1",
+      "INKOS_LLM_MODEL=env-model",
+      "OTHER_SETTING=keep",
+      "",
+    ].join("\n"), "utf-8");
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        configSource: "studio",
+        service: "moonshot",
+        defaultModel: "inkos-model",
+        services: [{ service: "moonshot" }],
+      },
+    }, null, 2), "utf-8");
+    const before = await readFile(join(root, "inkos.json"), "utf-8");
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const preview = await app.request("http://localhost/api/v1/services/config/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction: "env-to-inkos", preview: true }),
+    });
+    expect(preview.status).toBe(200);
+    await expect(preview.json()).resolves.toMatchObject({
+      result: { wrote: false, conflicts: ["model"] },
+    });
+    await expect(readFile(join(root, "inkos.json"), "utf-8")).resolves.toBe(before);
+
+    const execute = await app.request("http://localhost/api/v1/services/config/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction: "env-to-inkos", conflictPolicy: "source" }),
+    });
+    expect(execute.status).toBe(200);
+    await expect(execute.json()).resolves.toMatchObject({ result: { wrote: true, conflicts: [] } });
+    const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8")) as Record<string, any>;
+    expect(raw.llm.defaultModel).toBe("env-model");
+    expect(raw.llm.services[0].service).toBe("moonshot");
+    expect(raw.llm.apiKey).toBeUndefined();
+  });
+
+  it("executes Studio-to-env sync only when explicitly requested and preserves unrelated env content", async () => {
+    await writeFile(join(root, ".env"), "# keep\nOTHER_SETTING=keep\n", "utf-8");
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        configSource: "studio",
+        service: "custom:Gateway",
+        provider: "custom",
+        defaultModel: "gateway-model",
+        services: [{ service: "custom", name: "Gateway", baseUrl: "https://gateway.example/v1", apiFormat: "anthropic", stream: true }],
+      },
+    }, null, 2), "utf-8");
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/services/config/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction: "inkos-to-env" }),
+    });
+    expect(response.status).toBe(200);
+    const env = await readFile(join(root, ".env"), "utf-8");
+    expect(env).toContain("# keep");
+    expect(env).toContain("OTHER_SETTING=keep");
+    expect(env).toContain("INKOS_LLM_SERVICE=custom:Gateway");
+    expect(env).toContain("INKOS_LLM_API_FORMAT=anthropic");
+    expect(env).not.toContain("apiKey");
+  });
+
+  it("does not write config files during ordinary Studio config reads", async () => {
+    await writeFile(join(root, ".env"), "INKOS_LLM_MODEL=env-model\nOTHER_SETTING=keep\n", "utf-8");
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        configSource: "studio",
+        service: "moonshot",
+        defaultModel: "studio-model",
+        services: [{ service: "moonshot" }],
+      },
+    }, null, 2) + "\n", "utf-8");
+    await mkdir(join(root, ".inkos"), { recursive: true });
+    await writeFile(join(root, ".inkos", "secrets.json"), JSON.stringify({ services: {} }) + "\n", "utf-8");
+    const beforeConfig = await readFile(join(root, "inkos.json"), "utf-8");
+    const beforeEnv = await readFile(join(root, ".env"), "utf-8");
+    const beforeSecrets = await readFile(join(root, ".inkos", "secrets.json"), "utf-8");
+    const beforeConfigStat = await stat(join(root, "inkos.json"));
+    const beforeEnvStat = await stat(join(root, ".env"));
+    const beforeSecretsStat = await stat(join(root, ".inkos", "secrets.json"));
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/services/config");
+
+    expect(response.status).toBe(200);
+    await expect(readFile(join(root, "inkos.json"), "utf-8")).resolves.toBe(beforeConfig);
+    await expect(readFile(join(root, ".env"), "utf-8")).resolves.toBe(beforeEnv);
+    await expect(readFile(join(root, ".inkos", "secrets.json"), "utf-8")).resolves.toBe(beforeSecrets);
+    expect((await stat(join(root, "inkos.json"))).mtimeMs).toBe(beforeConfigStat.mtimeMs);
+    expect((await stat(join(root, ".env"))).mtimeMs).toBe(beforeEnvStat.mtimeMs);
+    expect((await stat(join(root, ".inkos", "secrets.json"))).mtimeMs).toBe(beforeSecretsStat.mtimeMs);
   });
 
   it("imports detected env config into Studio services without exposing the key", async () => {

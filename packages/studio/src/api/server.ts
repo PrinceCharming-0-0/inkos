@@ -32,6 +32,7 @@ import {
   resolveServiceModel,
   loadSecrets,
   saveSecrets,
+  syncLLMConfig,
   listModelsForService,
   isApiKeyOptionalForEndpoint,
   getAllEndpoints,
@@ -3549,6 +3550,34 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       storedConfigSource: normalizeConfigSource(llm.configSource),
       envConfig,
     });
+  });
+
+  app.post("/api/v1/services/config/sync", async (c) => {
+    const body = await c.req.json<{
+      direction?: "env-to-inkos" | "inkos-to-env";
+      preview?: boolean;
+      conflictPolicy?: "error" | "source" | "target";
+    }>().catch(() => null);
+    if (!body || (body.direction !== "env-to-inkos" && body.direction !== "inkos-to-env")) {
+      return c.json({ error: "direction must be env-to-inkos or inkos-to-env" }, 400);
+    }
+    const conflictPolicy = body.conflictPolicy ?? "error";
+    if (conflictPolicy !== "error" && conflictPolicy !== "source" && conflictPolicy !== "target") {
+      return c.json({ error: "conflictPolicy must be error, source, or target" }, 400);
+    }
+
+    try {
+      const result = await syncLLMConfig(root, {
+        direction: body.direction,
+        conflictPolicy,
+        write: body.preview !== true,
+      });
+      return c.json({ result });
+    } catch (error) {
+      return c.json({
+        error: error instanceof Error ? error.message : String(error),
+      }, 400);
+    }
   });
 
   app.post("/api/v1/services/config/import-env", async (c) => {
