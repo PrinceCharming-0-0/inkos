@@ -1492,6 +1492,71 @@ describe("createStudioServer daemon lifecycle", () => {
     ]);
   });
 
+  it("migrates a renamed custom service instead of leaving the old config entry", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        service: "custom:Old Gateway",
+        services: [
+          { service: "custom", name: "Old Gateway", baseUrl: "https://old.example", models: ["old-model"] },
+          { service: "moonshot", models: ["moonshot-model"] },
+        ],
+      },
+    }, null, 2), "utf-8");
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/services/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service: "custom:New Gateway",
+        previousService: "custom:Old Gateway",
+        services: [{
+          service: "custom",
+          name: "New Gateway",
+          baseUrl: "https://new.example",
+          models: ["new-model"],
+        }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
+    expect(raw.llm.service).toBe("custom:New Gateway");
+    expect(raw.llm.services).toHaveLength(2);
+    expect(raw.llm.services).toEqual(expect.arrayContaining([
+      { service: "custom", name: "New Gateway", baseUrl: "https://new.example", models: ["new-model"] },
+      { service: "moonshot", models: ["moonshot-model"] },
+    ]));
+  });
+
+  it("replaces a service model catalog when saving an edited list", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        services: [{ service: "moonshot", models: ["model-a", "model-b"] }],
+      },
+    }, null, 2), "utf-8");
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/services/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service: "moonshot",
+        services: [{ service: "moonshot", models: ["model-a"] }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
+    expect(raw.llm.services).toEqual([
+      { service: "moonshot", models: ["model-a"] },
+    ]);
+  });
+
   it("accepts and returns Anthropic Messages service configuration", async () => {
     await writeFile(join(root, "inkos.json"), JSON.stringify({
       ...projectConfig,

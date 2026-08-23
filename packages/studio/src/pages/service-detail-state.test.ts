@@ -236,6 +236,54 @@ describe("saveServiceConfig", () => {
     ]);
   });
 
+  it("migrates the secret and config when a custom service is renamed", async () => {
+    const calls: string[] = [];
+    const bodies: Array<{ path: string; body?: unknown }> = [];
+    const fetchJsonImpl = vi.fn(async (path: string, init?: { body?: string }) => {
+      calls.push(path);
+      bodies.push({ path, body: init?.body ? JSON.parse(init.body) : undefined });
+      if (path === "/services/custom%3ANew%20Gateway/secret") return { ok: true };
+      if (path === "/services/custom%3AOld%20Gateway/secret") return { ok: true };
+      if (path === "/services/config") return { ok: true };
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    await saveServiceConfig({
+      effectiveServiceId: "custom:New Gateway",
+      previousServiceId: "custom:Old Gateway",
+      serviceId: "custom",
+      isCustom: true,
+      resolvedCustomName: "New Gateway",
+      apiKey: "sk-live",
+      baseUrl: "https://gateway.example",
+      apiFormat: "chat",
+      stream: true,
+      temperature: "0.7",
+      detectedModel: "model-a",
+      configuredModels: [{ id: "model-a" }],
+      verifiedProbe: {
+        apiKey: "sk-live",
+        baseUrl: "https://gateway.example",
+        apiFormat: "chat",
+        stream: true,
+        models: [{ id: "model-a" }],
+        selectedModel: "model-a",
+        detected: { apiFormat: "chat", stream: true, baseUrl: "https://gateway.example" },
+      },
+      fetchJsonImpl: fetchJsonImpl as never,
+    });
+
+    expect(calls).toEqual([
+      "/services/custom%3ANew%20Gateway/secret",
+      "/services/custom%3AOld%20Gateway/secret",
+      "/services/config",
+    ]);
+    expect(bodies[2].body).toMatchObject({
+      service: "custom:New Gateway",
+      previousService: "custom:Old Gateway",
+    });
+  });
+
   it("reuses a matching successful test result when saving", async () => {
     const calls: string[] = [];
     const bodies: unknown[] = [];

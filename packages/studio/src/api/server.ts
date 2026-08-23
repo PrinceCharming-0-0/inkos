@@ -3629,10 +3629,20 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
   });
 
   app.put("/api/v1/services/config", async (c) => {
-    const body = await c.req.json<{ services?: unknown; defaultModel?: string; configSource?: LLMConfigSource; service?: string }>();
+    const body = await c.req.json<{
+      services?: unknown;
+      defaultModel?: string;
+      configSource?: LLMConfigSource;
+      service?: string;
+      previousService?: string;
+    }>();
     const config = await loadRawConfig(root);
     config.llm = config.llm ?? {};
     const llm = config.llm as Record<string, unknown>;
+    if (body.previousService && body.service && body.previousService !== body.service) {
+      const existingServices = normalizeServiceConfig(llm.services);
+      llm.services = existingServices.filter((entry) => serviceConfigKey(entry) !== body.previousService);
+    }
     if (body.services !== undefined) {
       const existingServices = normalizeServiceConfig(llm.services);
       const incomingServices = normalizeServiceConfig(body.services);

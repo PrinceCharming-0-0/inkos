@@ -123,6 +123,7 @@ export function matchServiceConfigEntryForDetail(
 
 export async function saveServiceConfig(args: {
   readonly effectiveServiceId: string;
+  readonly previousServiceId?: string;
   readonly serviceId: string;
   readonly isCustom: boolean;
   readonly apiKeyOptional?: boolean;
@@ -220,11 +221,22 @@ export async function saveServiceConfig(args: {
     body: JSON.stringify({ apiKey: trimmedKey }),
   });
 
+  if (args.previousServiceId && args.previousServiceId !== args.effectiveServiceId) {
+    await fetchJsonImpl(`/services/${encodeURIComponent(args.previousServiceId)}/secret`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "" }),
+    });
+  }
+
   await fetchJsonImpl("/services/config", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       service: args.effectiveServiceId,
+      ...(args.previousServiceId && args.previousServiceId !== args.effectiveServiceId
+        ? { previousService: args.previousServiceId }
+        : {}),
       ...(detectedModel ? { defaultModel: detectedModel } : {}),
       services: [
         {

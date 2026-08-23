@@ -86,15 +86,18 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
     return () => { cancelled = true; };
   }, [isCustom, persistedCustomName, serviceId]);
 
-  const resolvedCustomName = persistedCustomName || customName.trim() || "Custom";
+  const resolvedCustomName = isCustom ? (customName.trim() || persistedCustomName || "Custom") : "";
   const effectiveServiceId = isCustom ? `custom:${resolvedCustomName}` : serviceId;
+  const persistedServiceId = isCustom && persistedCustomName
+    ? `custom:${persistedCustomName}`
+    : effectiveServiceId;
   const label = isCustom ? (customName || persistedCustomName || tr("自定义服务", "Custom service")) : (svc?.label ?? serviceId);
   const storeModels = useServiceStore((s) => s.modelsByService[effectiveServiceId]);
 
   useEffect(() => {
     let cancelled = false;
     void rehydrateServiceConnectionStatus({
-      effectiveServiceId,
+      effectiveServiceId: persistedServiceId,
       shouldVerify: Boolean(svc?.connected),
       isCustom,
       baseUrl,
@@ -121,6 +124,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
     baseUrl,
     effectiveServiceId,
     isCustom,
+    persistedServiceId,
     setStoreModels,
     stream,
     svc?.connected,
@@ -197,8 +201,9 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
     if (!window.confirm(tr(`删除“${label}”的配置和密钥？`, `Delete the config and key for “${label}”?`))) return;
     setStatus({ state: "saving" });
     try {
-      await deleteServiceConfig(effectiveServiceId);
+      await deleteServiceConfig(persistedServiceId);
       clearStoreModels(effectiveServiceId);
+      if (persistedServiceId !== effectiveServiceId) clearStoreModels(persistedServiceId);
       await refreshServices();
       nav.toServices();
     } catch (e) {
@@ -217,6 +222,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
     try {
       const result = await saveServiceConfig({
         effectiveServiceId,
+        previousServiceId: persistedServiceId,
         serviceId,
         isCustom,
         apiKeyOptional,
@@ -261,6 +267,14 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   const handleRemoveModel = (modelId: string) => {
     const next = models.filter((model) => model.id.toLowerCase() !== modelId.toLowerCase());
     setConfiguredModels(next);
+    setVerifiedProbe((previous) => {
+      if (!previous) return previous;
+      const selectedModel = previous.selectedModel && next.some((model) => model.id.toLowerCase() === previous.selectedModel?.toLowerCase())
+        ? previous.selectedModel
+        : next[0]?.id;
+      return { ...previous, models: next, selectedModel };
+    });
+    setDetectedModel((previous) => previous.toLowerCase() === modelId.toLowerCase() ? (next[0]?.id ?? "") : previous);
     setStoreModels(effectiveServiceId, next);
     if (status.state === "connected") setStatus({ state: "connected", models: next });
   };
