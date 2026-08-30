@@ -43,6 +43,12 @@ InkOS 是一个面向故事创作与多语言翻译的 AI Agent 系统：长篇�
 
 **InkOS Studio 已支持 Moonshot（Kimi）。前往 Kimi 开放平台（[中文站](https://platform.kimi.com/?aff=inkos)｜[Global](https://platform.kimi.ai/?aff=inkos)）获取 API Key，即可开始创作。**
 
+<p align="center">
+  <a href="https://www.volcengine.com/activity/ai618?utm_source=OWO&utm_medium=devrel-1&utm_campaign=hw&utm_term=inkos&utm_content=hw"><img src="assets/volcengine-agent-coding-plan.png" width="840" alt="火山方舟 Agent Plan 与 Coding Plan 赞助 InkOS"></a>
+</p>
+
+感谢 [字节火山引擎](https://www.volcengine.com/activity/ai618?utm_source=OWO&utm_medium=devrel-1&utm_campaign=hw&utm_term=inkos&utm_content=hw) 赞助本项目！火山方舟 Agent/Coding Plan 国模套餐首购 ¥9.9 起，支持 GLM-5.3、Kimi-K3、DeepSeek、MiniMax、Doubao 等模型；注册免费领取 2500 万 Token，统一 API，适配编码与智能体开发。[立即前往 →](https://www.volcengine.com/activity/ai618?utm_source=OWO&utm_medium=devrel-1&utm_campaign=hw&utm_term=inkos&utm_content=hw)
+
 > 💡 **写小说，先给 Agent 接一层专业数据** —— 写小说不只缺模型，更缺素材。推荐搭配 [**火花数据API（huohuaapi）**](https://huohuaapi.com/)：按调用计费的小说 / 网文创作数据，让 Agent 动笔前先查小说正文、章节结构、人物设定、文风和创作方法等带来源素材，而不是只靠 Prompt 硬凑一份“剧情提纲”。
 
 ## v1.8.0 - 统一 Pi Agent Harness 与专业创作内核
