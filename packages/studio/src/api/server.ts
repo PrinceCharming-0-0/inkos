@@ -3600,10 +3600,13 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const guessedService = env.values.baseUrl ? guessServiceFromBaseUrl(env.values.baseUrl) : null;
     const service = explicitService || guessedService || "custom";
 
+    // When the user explicitly set INKOS_LLM_SERVICE=custom:XXX, preserve that
+    // identity so that import-env and env→Studio produce the same service key.
+    // Fall back to "Env LLM" only when the service was guessed from baseUrl.
     const entry: ServiceConfigEntry = service === "custom"
       ? {
           service: "custom",
-          name: "Env LLM",
+          name: explicitService ? explicitService.replace(/^custom:/, "") : "Env LLM",
           ...(env.values.baseUrl ? { baseUrl: env.values.baseUrl } : {}),
         }
       : { service };
