@@ -23,6 +23,18 @@ export interface LLMConfigSyncChange {
   readonly action: "add" | "update" | "unchanged" | "conflict";
   readonly sourcePresent: boolean;
   readonly targetPresent: boolean;
+  /**
+   * The value on the SOURCE side (what will be written to the target).
+   * Undefined when absent. Never contains a secret: the synced fields exclude
+   * API keys (INKOS_LLM_API_KEY is deliberately not one of them).
+   */
+  readonly sourceValue?: string | number | boolean;
+  /**
+   * The value currently on the TARGET side (before this sync).
+   * Undefined when absent. Consumers render "old → new" as
+   * `targetValue → sourceValue`.
+   */
+  readonly targetValue?: string | number | boolean;
 }
 
 export interface LLMConfigSyncResult {
@@ -182,27 +194,18 @@ export async function syncLLMConfig(
     return buildResult(options.direction, changes, [], secretPresence, false, false, []);
   }
 
+  // Service-switch warnings are direction-relevant and computed from the same
+  // values for both preview and write, so a preview already tells the user what
+  // will happen to the selected service and its key.
+  const warnings = computeServiceSwitchWarnings(options.direction, source, target, secretPresence);
+
   const shouldWrite = options.write ?? true;
   if (!shouldWrite) {
-    return buildResult(options.direction, changes, conflicts, secretPresence, false, false, []);
+    return buildResult(options.direction, changes, conflicts, secretPresence, false, false, warnings);
   }
-
-  let warnings: string[] = [];
 
   if (options.direction === "env-to-inkos") {
     const prevService = target.service ?? undefined;
-    const nextService = source.service ?? "custom";
-    const serviceChanged = prevService !== undefined && prevService !== nextService;
-    // When the selected service changes, warn if the new service (source side)
-    // does not have a confirmed API key.  We do not copy or move secrets — the
-    // user must save a key for the new service manually.
-    if (serviceChanged && !secretPresence.source) {
-      warnings.push(
-        `Selected service changed from "${prevService}" to "${nextService}". ` +
-        `The new service "${nextService}" has no saved API key; ` +
-        `please save an API key for it in Studio services.`,
-      );
-    }
     const nextConfig = applyValuesToConfig(config, source, target, conflictPolicy, prevService);
     const content = JSON.stringify(nextConfig, null, 2) + "\n";
     const currentContent = await readFile(join(projectRoot, "inkos.json"), "utf-8");
@@ -223,6 +226,38 @@ export async function syncLLMConfig(
     });
   }
   return buildResult(options.direction, changes, conflicts, secretPresence, nextEnv !== env.raw, true, warnings);
+}
+
+/**
+ * Describe a selected-service switch for the target side (env-to-inkos only).
+ * Secrets are never read into, moved, copied, or deleted by sync — so if the new
+ * service has no key, we say so instead of pretending otherwise. The previous
+ * service's key is always left in place. The same wording works for preview and
+ * write (present tense).
+ */
+function computeServiceSwitchWarnings(
+  direction: LLMConfigSyncDirection,
+  source: SyncValues,
+  target: SyncValues,
+  secretPresence: { readonly env: boolean; readonly source: boolean; readonly target: boolean },
+): string[] {
+  if (direction !== "env-to-inkos") return [];
+  const prevService = target.service;
+  const nextService = source.service ?? "custom";
+  if (prevService === undefined || prevService === nextService) return [];
+
+  const parts = [
+    `Selected service will change from "${prevService}" to "${nextService}".`,
+  ];
+  if (!secretPresence.source) {
+    parts.push(
+      `The new service "${nextService}" has no saved API key; please save one for it in Studio services.`,
+    );
+  }
+  parts.push(
+    `The previous service "${prevService}"'s saved API key is left in place and is not moved or deleted.`,
+  );
+  return [parts.join(" ")];
 }
 
 async function readConfig(projectRoot: string): Promise<Record<string, unknown>> {
@@ -314,13 +349,13 @@ function compareValues(
   for (const field of SYNC_FIELDS) {
     const sourceValue = source[field];
     const targetValue = target[field];
-    const sourcePresent = sourceValue !== undefined;
-    const targetPresent = targetValue !== undefined;
     changes.push({
       field,
       action: classifyChange(sourceValue, targetValue, conflictPolicy),
-      sourcePresent,
-      targetPresent,
+      sourcePresent: sourceValue !== undefined,
+      targetPresent: targetValue !== undefined,
+      sourceValue,
+      targetValue,
     });
   }
 
@@ -333,6 +368,8 @@ function compareValues(
       action: classifyChange(sourceValue, targetValue, conflictPolicy),
       sourcePresent: sourceValue !== undefined,
       targetPresent: targetValue !== undefined,
+      sourceValue,
+      targetValue,
     });
   }
   return changes;

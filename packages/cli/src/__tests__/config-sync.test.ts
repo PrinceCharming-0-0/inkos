@@ -55,13 +55,18 @@ describe("inkos config sync", () => {
     const preview = run(["config", "sync", "--from", "env", "--preview", "--on-conflict", "source"]);
     expect(preview).toContain("Preview");
     expect(preview).not.toContain("apiKey");
+    // Preview must surface the actual value change, not just "model: update".
+    expect(preview).toContain("model");
+    expect(preview).toContain("→");
 
     expect(JSON.parse(await readFile(join(root, "inkos.json"), "utf-8")).llm.model).toBe("old-model");
 
     const output = run(["config", "sync", "--from", "env", "--on-conflict", "source"]);
     const config = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8")) as Record<string, any>;
-    expect(output).toContain("Synced");
+    expect(output).toContain("Import");
     expect(output).not.toContain("apiKey");
+    expect(output).toContain("old-model");
+    expect(output).toContain("cli-model");
 
     expect(config.llm.defaultModel).toBe("cli-model");
     expect(config.llm.services[0].service).toBe("moonshot");
@@ -84,8 +89,10 @@ describe("inkos config sync", () => {
     // Default policy: the env-declared model difference is a plain update.
     const output = run(["config", "sync", "--from", "env"]);
 
-    expect(output).toContain("Synced");
+    expect(output).toContain("Import");
     expect(output).not.toContain("Conflicts");
+    expect(output).toContain("inkos-model");
+    expect(output).toContain("env-model");
     const config = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8")) as Record<string, any>;
     expect(config.llm.defaultModel).toBe("env-model");
   });

@@ -238,6 +238,11 @@ describe("syncLLMConfig service-change integrity", () => {
     // After sync the inkos side will select deepseek; secrets has a moonshot
     // key but NOT a deepseek key → targetPresent must be false.
     expect(result.secret.targetPresent).toBe(false);
+    // Preview must also surface the service-switch consequences.
+    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.warnings[0]).toContain('from "moonshot" to "deepseek"');
+    expect(result.warnings[0]).toContain("no saved API key");
+    expect(result.warnings[0]).toContain("not moved or deleted");
   });
 
   // ─── TC6b: A→B switch works under the default policy with warnings intact ────
@@ -265,6 +270,7 @@ describe("syncLLMConfig service-change integrity", () => {
     // Old service key is never moved or copied; the gap is reported.
     expect(result.secret.targetPresent).toBe(false);
     expect(result.warnings.some((w) => w.includes("no saved API key"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("not moved or deleted"))).toBe(true);
     const secretsRaw = JSON.parse(await readFile(join(root, ".inkos", "secrets.json"), "utf-8"));
     expect(secretsRaw.services["custom:Gateway"].apiKey).toBe("sk-old-key");
     expect(secretsRaw.services.deepseek).toBeUndefined();

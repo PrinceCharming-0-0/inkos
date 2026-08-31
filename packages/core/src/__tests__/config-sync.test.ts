@@ -139,6 +139,16 @@ describe("syncLLMConfig", () => {
     expect(env).toContain("INKOS_LLM_PROXY_URL=https://proxy.example");
     expect(env).not.toContain("apiKey");
     expect(env.split("OTHER_SETTING=keep").length).toBe(2);
+
+    // add/update changes carry concrete old → new values for preview rendering.
+    const modelChange = result.changes.find((change) => change.field === "model");
+    expect(modelChange?.action).toBe("update");
+    expect(modelChange?.targetValue).toBe("old-model");
+    expect(modelChange?.sourceValue).toBe("gateway-model");
+    const streamChange = result.changes.find((change) => change.field === "stream");
+    expect(streamChange?.action).toBe("add");
+    expect(streamChange?.sourceValue).toBe(true);
+    expect(streamChange?.targetValue).toBeUndefined();
   });
 
   it("applies differing source values as updates by default (no blocking conflict)", async () => {
@@ -160,6 +170,9 @@ describe("syncLLMConfig", () => {
     expect(result.conflicts).toEqual([]);
     const modelChange = result.changes.find((change) => change.field === "model");
     expect(modelChange?.action).toBe("update");
+    // The change carries the actual old → new values for user-facing previews.
+    expect(modelChange?.targetValue).toBe("inkos-model");
+    expect(modelChange?.sourceValue).toBe("env-model");
     const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8")) as Record<string, any>;
     expect(raw.llm.defaultModel).toBe("env-model");
     expect((await readFile(join(root, ".env"), "utf-8"))).toContain("OTHER_SETTING=keep");

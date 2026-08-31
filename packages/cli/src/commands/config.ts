@@ -32,13 +32,24 @@ configCommand
         conflictPolicy,
         write: !opts.preview,
       });
-      const mode = opts.preview ? "Preview" : result.wrote ? "Synced" : "No changes";
-      log(`${mode}: ${direction === "env-to-inkos" ? ".env → inkos.json" : "inkos.json → .env"}`);
-      for (const change of result.changes.filter((item) => item.action !== "unchanged")) {
-        log(`  ${change.action}: ${change.field} (source ${change.sourcePresent ? "set" : "unset"}, target ${change.targetPresent ? "set" : "unset"})`);
+      const verb = direction === "env-to-inkos" ? "Import" : "Export";
+      const mode = opts.preview ? "Preview" : result.wrote ? verb : "No changes";
+      log(`${mode}: ${direction === "env-to-inkos" ? ".env → Studio (inkos.json)" : "inkos.json → .env"}`);
+      const meaningful = result.changes.filter((item) => item.action !== "unchanged");
+      for (const change of meaningful) {
+        if (change.action === "add") {
+          log(`  add: ${change.field} = ${formatChangeValue(change.sourceValue)}`);
+        } else {
+          log(
+            `  update: ${change.field}: ${formatChangeValue(change.targetValue)} → ${formatChangeValue(change.sourceValue)}`,
+          );
+        }
+      }
+      for (const warning of result.warnings) {
+        log(`  warning: ${warning}`);
       }
       if (result.secret.sourcePresent || result.secret.targetPresent) {
-        log("  secret: unchanged (API Key values are never synchronized by this command)");
+        log("  secret: unchanged (API Key values are never imported or exported by this command)");
       }
       if (result.conflicts.length > 0) {
         logError(`Conflicts: ${result.conflicts.join(", ")}`);
@@ -206,6 +217,12 @@ configCommand
   });
 
 const KNOWN_AGENTS = ["writer", "auditor", "reviser", "architect", "radar", "chapter-analyzer"] as const;
+
+function formatChangeValue(value: string | number | boolean | undefined): string {
+  if (value === undefined) return "(unset)";
+  if (value === "") return "(empty)";
+  return String(value);
+}
 const ENV_VAR_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function validateApiKeyEnvName(value: string): string | undefined {

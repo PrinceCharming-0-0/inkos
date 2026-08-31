@@ -18,6 +18,8 @@ interface SyncChange {
   action: "add" | "update" | "unchanged" | "conflict";
   sourcePresent: boolean;
   targetPresent: boolean;
+  sourceValue?: string | number | boolean;
+  targetValue?: string | number | boolean;
 }
 
 interface SyncResult {
@@ -178,7 +180,7 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
               disabled={syncBusy}
               className="rounded-lg border border-border/50 px-3 py-1.5 text-xs hover:bg-secondary/50 disabled:opacity-50"
             >
-              {syncing === "env-to-inkos:preview" ? tr("预览中…", "Previewing…") : tr("预览 .env → Studio", "Preview .env → Studio")}
+              {syncing === "env-to-inkos:preview" ? tr("预览中…", "Previewing…") : tr("预览导入到 Studio", "Preview import to Studio")}
             </button>
             <button
               type="button"
@@ -186,7 +188,7 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
               disabled={syncBusy}
               className="rounded-lg border border-border/50 bg-secondary/40 px-3 py-1.5 text-xs hover:bg-secondary/70 disabled:opacity-50"
             >
-              {syncing === "env-to-inkos:write" ? tr("同步中…", "Syncing…") : tr("同步到 Studio", "Sync to Studio")}
+              {syncing === "env-to-inkos:write" ? tr("应用中…", "Applying…") : tr("应用到 Studio", "Apply to Studio")}
             </button>
             <button
               type="button"
@@ -194,7 +196,7 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
               disabled={syncBusy}
               className="rounded-lg border border-border/50 px-3 py-1.5 text-xs hover:bg-secondary/50 disabled:opacity-50"
             >
-              {syncing === "inkos-to-env:preview" ? tr("预览中…", "Previewing…") : tr("预览 Studio → .env", "Preview Studio → .env")}
+              {syncing === "inkos-to-env:preview" ? tr("预览中…", "Previewing…") : tr("预览导出到 .env", "Preview export to .env")}
             </button>
             <button
               type="button"
@@ -202,7 +204,7 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
               disabled={syncBusy}
               className="rounded-lg border border-border/50 bg-secondary/40 px-3 py-1.5 text-xs hover:bg-secondary/70 disabled:opacity-50"
             >
-              {syncing === "inkos-to-env:write" ? tr("同步中…", "Syncing…") : tr("同步到 .env", "Sync to .env")}
+              {syncing === "inkos-to-env:write" ? tr("导出中…", "Exporting…") : tr("导出到 .env", "Export to .env")}
             </button>
           </div>
           {envDetected && activeEnvSummary.hasApiKey ? (
@@ -256,19 +258,43 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
         <div className="rounded-lg border border-border/30 bg-secondary/20 p-3 text-xs text-muted-foreground/80 space-y-1.5">
           <div className="text-foreground">
             {syncResult.wrote
-              ? tr("同步已完成", "Sync completed")
+              ? (syncResult.direction === "env-to-inkos"
+                ? tr("已应用到 Studio", "Applied to Studio")
+                : tr("已导出到 .env", "Exported to .env"))
               : syncResult.changed
-                ? tr("同步预览：以下字段将从源侧更新", "Sync preview: the following fields will be updated from the source")
+                ? tr("预览：以下字段将从源侧应用到目标侧", "Preview: the following fields will be applied from source to target")
                 : tr("配置已一致，无需写入", "Configuration is already in sync; nothing was written")}
           </div>
-          {syncResult.changes.filter((change) => change.action !== "unchanged").length > 0 ? (
-            <div>
-              {syncResult.wrote ? tr("已更新字段：", "Updated fields:") : tr("将更新字段：", "Fields to update:")} {syncResult.changes
-                .filter((change) => change.action !== "unchanged")
-                .map((change) => `${change.field} (${change.action === "add" ? tr("新增", "add") : tr("更新", "update")})`)
-                .join(", ")}
-            </div>
-          ) : null}
+          {(() => {
+            const meaningful = syncResult.changes.filter((change) => change.action !== "unchanged");
+            if (meaningful.length === 0) return null;
+            const sideNames = syncResult.direction === "env-to-inkos"
+              ? { source: tr(".env", ".env"), target: tr("Studio", "Studio") }
+              : { source: tr("Studio", "Studio"), target: tr(".env", ".env") };
+            return (
+              <div className="space-y-1">
+                <div>{syncResult.wrote ? tr("已更新字段：", "Updated fields:") : tr("将更新字段：", "Fields to update:")}</div>
+                <ul className="list-inside list-disc space-y-0.5">
+                  {meaningful.map((change) => (
+                    <li key={change.field}>
+                      <span className="font-mono text-foreground">{change.field}</span>
+                      {change.action === "add" ? (
+                        <span> {tr("新增", "add")}: <span className="font-mono text-foreground">{String(change.sourceValue)}</span></span>
+                      ) : (
+                        <span>
+                          {tr("：", ": ")}
+                          <span className="font-mono line-through text-muted-foreground/60">{change.targetValue === undefined ? tr("（无）", "(none)") : String(change.targetValue)}</span>
+                          <span> {tr("→", "→")} </span>
+                          <span className="font-mono text-foreground">{change.sourceValue === undefined ? tr("（无）", "(none)") : String(change.sourceValue)}</span>
+                        </span>
+                      )}
+                      <span className="text-muted-foreground/50"> ({sideNames.source} → {sideNames.target})</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
           {(syncResult.warnings ?? []).length > 0 ? (
             <div className="text-amber-600 space-y-1">
               {(syncResult.warnings ?? []).map((warning, index) => (
@@ -276,17 +302,19 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
               ))}
             </div>
           ) : null}
-          {syncResult.secret.sourcePresent || syncResult.secret.targetPresent ? (
-            <div>
-              {tr(
-                "API Key 不会被同步；源侧密钥状态：",
-                "API keys are never synchronized; source-side key status:",
-              )}
-              <span className="text-foreground"> {syncResult.secret.sourcePresent ? tr("已设置", "set") : tr("未设置", "not set")}</span>
-              {tr("；目标侧（同步后）：", "; target side (after sync): ")}
-              <span className="text-foreground"> {syncResult.secret.targetPresent ? tr("已设置", "set") : tr("未设置", "not set")}</span>
+          <div>
+            {tr("API Key 不会被导入或导出；两侧密钥状态保持不变：", "API keys are never imported or exported; key status on both sides is unchanged:")}
+            <div className="pl-2">
+              <div>
+                {syncResult.direction === "env-to-inkos" ? tr(".env 侧：", ".env side:") : tr("Studio 侧：", "Studio side:")}
+                <span className="text-foreground"> {syncResult.secret.sourcePresent ? tr("已设置", "set") : tr("未设置", "not set")}</span>
+              </div>
+              <div>
+                {syncResult.direction === "env-to-inkos" ? tr("Studio 侧（应用后）：", "Studio side (after apply):") : tr(".env 侧（导出后）：", ".env side (after export):")}
+                <span className="text-foreground"> {syncResult.secret.targetPresent ? tr("已设置", "set") : tr("未设置", "not set")}</span>
+              </div>
             </div>
-          ) : null}
+          </div>
         </div>
       ) : null}
 
