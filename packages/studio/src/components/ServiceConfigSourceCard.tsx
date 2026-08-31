@@ -27,6 +27,7 @@ interface SyncResult {
   conflicts: string[];
   changes: SyncChange[];
   secret: { sourcePresent: boolean; targetPresent: boolean; changed: false };
+  warnings?: string[];
 }
 
 interface SyncResponse {
@@ -90,13 +91,15 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
     setSyncing(key);
     setError(null);
     try {
+      // The sync direction is an explicit user choice: the source side is
+      // authoritative and plain value differences are applied as updates.
       const response = await fetchJson<SyncResponse>("/services/config/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ direction, preview, conflictPolicy: "error" }),
+        body: JSON.stringify({ direction, preview }),
       });
       setSyncResult(response.result);
-      if (!preview && response.result.conflicts.length === 0) {
+      if (!preview) {
         await load();
         onChange?.();
       }
@@ -254,36 +257,35 @@ export function ServiceConfigSourceCard({ onChange }: { onChange?: () => void })
           <div className="text-foreground">
             {syncResult.wrote
               ? tr("同步已完成", "Sync completed")
-              : syncResult.conflicts.length > 0
-                ? tr("同步预览发现冲突", "Sync preview found conflicts")
-                : syncResult.changed
-                  ? tr("同步预览", "Sync preview")
-                  : tr("配置已一致，无需写入", "Configuration is already in sync; nothing was written")}
+              : syncResult.changed
+                ? tr("同步预览：以下字段将从源侧更新", "Sync preview: the following fields will be updated from the source")
+                : tr("配置已一致，无需写入", "Configuration is already in sync; nothing was written")}
           </div>
-          {syncResult.conflicts.length > 0 ? (
-            <div className="text-rose-500">
-              {tr("存在冲突，未写入：", "Conflicts, nothing was written:")} {syncResult.conflicts.join(", ")}
-            </div>
-          ) : null}
           {syncResult.changes.filter((change) => change.action !== "unchanged").length > 0 ? (
             <div>
-              {tr("变更字段：", "Changed fields:")} {syncResult.changes
+              {syncResult.wrote ? tr("已更新字段：", "Updated fields:") : tr("将更新字段：", "Fields to update:")} {syncResult.changes
                 .filter((change) => change.action !== "unchanged")
-                .map((change) => change.field)
+                .map((change) => `${change.field} (${change.action === "add" ? tr("新增", "add") : tr("更新", "update")})`)
                 .join(", ")}
             </div>
-          ) : syncResult.changed ? (
-            <div>
-              {tr("变更字段：", "Changed fields:")} {syncResult.changes
-                .filter((change) => change.action !== "unchanged")
-                .map((change) => change.field)
-                .join(", ")}
+          ) : null}
+          {(syncResult.warnings ?? []).length > 0 ? (
+            <div className="text-amber-600 space-y-1">
+              {(syncResult.warnings ?? []).map((warning, index) => (
+                <div key={index}>{warning}</div>
+              ))}
             </div>
-          ) : (
-            <div>{tr("两边的非敏感 LLM 配置已经一致。", "The non-sensitive LLM configuration is already identical on both sides.")}</div>
-          )}
+          ) : null}
           {syncResult.secret.sourcePresent || syncResult.secret.targetPresent ? (
-            <div>{tr("API Key 未被同步，原有 secret 状态保持不变。", "API keys were not synchronized; existing secret state was unchanged.")}</div>
+            <div>
+              {tr(
+                "API Key 不会被同步；源侧密钥状态：",
+                "API keys are never synchronized; source-side key status:",
+              )}
+              <span className="text-foreground"> {syncResult.secret.sourcePresent ? tr("已设置", "set") : tr("未设置", "not set")}</span>
+              {tr("；目标侧（同步后）：", "; target side (after sync): ")}
+              <span className="text-foreground"> {syncResult.secret.targetPresent ? tr("已设置", "set") : tr("未设置", "not set")}</span>
+            </div>
           ) : null}
         </div>
       ) : null}

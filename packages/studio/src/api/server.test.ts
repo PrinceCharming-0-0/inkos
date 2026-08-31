@@ -1749,9 +1749,10 @@ describe("createStudioServer daemon lifecycle", () => {
       body: JSON.stringify({ direction: "env-to-inkos", preview: true }),
     });
     expect(preview.status).toBe(200);
-    await expect(preview.json()).resolves.toMatchObject({
-      result: { wrote: false, conflicts: ["model"] },
-    });
+    // A value difference is a plain update now; preview reports it without writing.
+    const previewBody = (await preview.json()) as { result: { wrote: boolean; conflicts: string[]; changes: Array<{ field: string; action: string }> } };
+    expect(previewBody.result).toMatchObject({ wrote: false, conflicts: [] });
+    expect(previewBody.result.changes.find((change) => change.field === "model")?.action).toBe("update");
     await expect(readFile(join(root, "inkos.json"), "utf-8")).resolves.toBe(before);
 
     const execute = await app.request("http://localhost/api/v1/services/config/sync", {

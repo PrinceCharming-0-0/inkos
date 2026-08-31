@@ -13,8 +13,8 @@ configCommand
   .description("Synchronize non-sensitive LLM config between project .env and inkos.json")
   .requiredOption("--from <source>", "Sync direction: env or inkos")
   .option("--preview", "Show the planned changes without writing files")
-  .option("--force", "Apply source values when source and target conflict")
-  .option("--on-conflict <policy>", "Conflict policy: error, source, or target", "error")
+  .option("--force", "Apply source values when source and target differ (default behavior)")
+  .option("--on-conflict <policy>", "Difference handling: source/error apply source values, target keeps existing target values", "error")
   .action(async (opts: { from: string; preview?: boolean; force?: boolean; onConflict: string }) => {
     try {
       const direction: LLMConfigSyncDirection = opts.from === "env"

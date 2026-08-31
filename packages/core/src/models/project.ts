@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 // C1 (v2.0.0 breaking): `maxTokens` 字段已被 providers bank 接管；zod 用 strip mode 静默丢弃老配置里的 `maxTokens`。
-const LLMServiceEntrySchema = z.object({
+export const LLMServiceEntrySchema = z.object({
   service: z.string().min(1),
   name: z.string().min(1).optional(),
   baseUrl: z.string().url().optional(),

@@ -69,10 +69,10 @@ describe("inkos config sync", () => {
 
   });
 
-  it("returns a conflict failure without changing files", async () => {
-    root = await mkdtemp(join(tmpdir(), "inkos-cli-sync-conflict-"));
+  it("applies differing values as updates by default without --on-conflict", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-cli-sync-update-"));
     const configContent = JSON.stringify({
-      name: "cli-sync-conflict",
+      name: "cli-sync-update",
       version: "0.1.0",
       llm: { configSource: "studio", service: "moonshot", defaultModel: "inkos-model", services: [{ service: "moonshot" }] },
       notify: [],
@@ -81,18 +81,31 @@ describe("inkos config sync", () => {
     await writeFile(join(root, "inkos.json"), configContent, "utf-8");
     await writeFile(join(root, ".env"), envContent, "utf-8");
 
-    let exitCode = 0;
-    let output = "";
-    try {
-      output = run(["config", "sync", "--from", "env"]);
-    } catch (error) {
-      exitCode = (error as { status?: number }).status ?? 1;
-      output = `${(error as { stdout?: string }).stdout ?? ""}${(error as { stderr?: string }).stderr ?? ""}`;
-    }
+    // Default policy: the env-declared model difference is a plain update.
+    const output = run(["config", "sync", "--from", "env"]);
 
-    expect(exitCode).toBe(1);
-    expect(output).toContain("Conflicts: model");
-    await expect(readFile(join(root, "inkos.json"), "utf-8")).resolves.toBe(configContent);
-    await expect(readFile(join(root, ".env"), "utf-8")).resolves.toBe(envContent);
+    expect(output).toContain("Synced");
+    expect(output).not.toContain("Conflicts");
+    const config = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8")) as Record<string, any>;
+    expect(config.llm.defaultModel).toBe("env-model");
+  });
+
+  it("keeps existing target values with --on-conflict target", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-cli-sync-target-"));
+    const configContent = JSON.stringify({
+      name: "cli-sync-target",
+      version: "0.1.0",
+      llm: { configSource: "studio", service: "moonshot", defaultModel: "inkos-model", services: [{ service: "moonshot" }] },
+      notify: [],
+    }, null, 2) + "\n";
+    const envContent = "INKOS_LLM_SERVICE=moonshot\nINKOS_LLM_MODEL=env-model\n";
+    await writeFile(join(root, "inkos.json"), configContent, "utf-8");
+    await writeFile(join(root, ".env"), envContent, "utf-8");
+
+    const output = run(["config", "sync", "--from", "env", "--on-conflict", "target"]);
+
+    expect(output).toContain("No changes");
+    const config = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8")) as Record<string, any>;
+    expect(config.llm.defaultModel).toBe("inkos-model");
   });
 });

@@ -141,7 +141,7 @@ describe("syncLLMConfig", () => {
     expect(env.split("OTHER_SETTING=keep").length).toBe(2);
   });
 
-  it("blocks conflicting values by default and leaves both files unchanged", async () => {
+  it("applies differing source values as updates by default (no blocking conflict)", async () => {
     await createProject(
       {
         configSource: "studio",
@@ -151,15 +151,62 @@ describe("syncLLMConfig", () => {
       },
       "INKOS_LLM_SERVICE=moonshot\nINKOS_LLM_MODEL=env-model\nOTHER_SETTING=keep\n",
     );
-    const beforeConfig = await readFile(join(root, "inkos.json"), "utf-8");
-    const beforeEnv = await readFile(join(root, ".env"), "utf-8");
 
+    // Default policy (no conflictPolicy): the user explicitly chose the sync
+    // direction, so a plain value difference is an update from the source.
     const result = await syncLLMConfig(root, { direction: "env-to-inkos", write: true });
 
+    expect(result.wrote).toBe(true);
+    expect(result.conflicts).toEqual([]);
+    const modelChange = result.changes.find((change) => change.field === "model");
+    expect(modelChange?.action).toBe("update");
+    const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8")) as Record<string, any>;
+    expect(raw.llm.defaultModel).toBe("env-model");
+    expect((await readFile(join(root, ".env"), "utf-8"))).toContain("OTHER_SETTING=keep");
+  });
+
+  it("keeps target values for differing fields under conflictPolicy target (compat)", async () => {
+    await createProject(
+      {
+        configSource: "studio",
+        service: "moonshot",
+        defaultModel: "inkos-model",
+        services: [{ service: "moonshot" }],
+      },
+      "INKOS_LLM_SERVICE=moonshot\nINKOS_LLM_MODEL=env-model\nOTHER_SETTING=keep\n",
+    );
+
+    const result = await syncLLMConfig(root, {
+      direction: "env-to-inkos",
+      conflictPolicy: "target",
+      write: true,
+    });
+
+    // Differing fields are skipped; nothing else to write → no-op.
     expect(result.wrote).toBe(false);
-    expect(result.conflicts).toContain("model");
+    expect(result.conflicts).toEqual([]);
+    const modelChange = result.changes.find((change) => change.field === "model");
+    expect(modelChange?.action).toBe("unchanged");
+    const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8")) as Record<string, any>;
+    expect(raw.llm.defaultModel).toBe("inkos-model");
+  });
+
+  it("rejects a candidate that violates the project schema and writes nothing", async () => {
+    await createProject(
+      {
+        configSource: "studio",
+        service: "moonshot",
+        defaultModel: "inkos-model",
+        services: [{ service: "moonshot" }],
+      },
+      "INKOS_LLM_SERVICE=moonshot\nINKOS_LLM_TEMPERATURE=5\nOTHER_SETTING=keep\n",
+    );
+    const beforeConfig = await readFile(join(root, "inkos.json"), "utf-8");
+
+    // temperature 5 is outside the existing schema range [0, 2] → hard failure,
+    // and the atomic write means inkos.json stays untouched.
+    await expect(syncLLMConfig(root, { direction: "env-to-inkos" })).rejects.toThrow(/invalid LLM config/i);
     await expect(readFile(join(root, "inkos.json"), "utf-8")).resolves.toBe(beforeConfig);
-    await expect(readFile(join(root, ".env"), "utf-8")).resolves.toBe(beforeEnv);
   });
 
   it("supports explicit source conflict resolution and reports preview without writing", async () => {

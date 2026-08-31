@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "dotenv";
+import { LLMConfigSchema, LLMServiceEntrySchema } from "../models/project.js";
 import { commitAtomicFileSet } from "../utils/atomic-file-set.js";
 import {
   guessServiceFromBaseUrl,
@@ -28,13 +29,38 @@ export interface LLMConfigSyncResult {
   readonly direction: LLMConfigSyncDirection;
   readonly wrote: boolean;
   readonly changed: boolean;
+  /**
+   * Reserved for real, explainable conflict conditions. Ordinary value
+   * differences are classified as add/update/unchanged, so this is empty
+   * today; the field is kept so existing consumers keep working.
+   */
   readonly conflicts: readonly string[];
   readonly changes: readonly LLMConfigSyncChange[];
+  /**
+   * Per-side API key presence, judged against the service each side actually
+   * uses. Secrets are never read into, moved, copied, or deleted by sync —
+   * only their presence is reported, and no key value ever appears in a result.
+   *
+   * - sourcePresent: does the SOURCE side have a key for its service?
+   *   env-to-inkos → INKOS_LLM_API_KEY set in .env;
+   *   inkos-to-env → .inkos/secrets.json has a key for the inkos selected service.
+   * - targetPresent: will the TARGET side have a key for the service it will
+   *   use after this sync? env-to-inkos → does .inkos/secrets.json have a key
+   *   for the env-declared service (the post-sync selected service);
+   *   inkos-to-env → INKOS_LLM_API_KEY set in .env.
+   *   A false value here (e.g. after a service switch) means the target will
+   *   run without a key unless the user saves one — it is NOT "no change".
+   */
   readonly secret: {
     readonly sourcePresent: boolean;
     readonly targetPresent: boolean;
     readonly changed: false;
   };
+  /**
+   * Non-fatal conditions the caller should surface to the user.
+   * Examples: a key-gap warning when the selected service changed and the new service has no API key.
+   */
+  readonly warnings: readonly string[];
 }
 
 interface SyncValues {
@@ -79,6 +105,56 @@ const SYNC_FIELDS = [
   "proxyUrl",
 ] as const;
 
+/**
+ * Top-level llm mirror fields that sync may write, validated with the existing
+ * LLMConfigSchema before an atomic write is committed. Partial so untouched
+ * fields are not required.
+ */
+const LLM_MIRROR_SCHEMA = LLMConfigSchema.pick({
+  service: true,
+  provider: true,
+  baseUrl: true,
+  model: true,
+  defaultModel: true,
+  temperature: true,
+  thinkingBudget: true,
+  proxyUrl: true,
+  apiFormat: true,
+  stream: true,
+  extra: true,
+}).partial();
+
+/**
+ * Validate the candidate inkos.json llm section with the existing project schema
+ * before writing. The services array is rewritten wholesale, so every entry is
+ * checked; only the mirror fields sync actually wrote are checked on llm itself
+ * (legacy configs may carry pre-existing empty/invalid unrelated fields that
+ * sync must not start rejecting).
+ */
+function validateCandidateConfig(config: Record<string, unknown>, writtenMirror: Record<string, unknown>): void {
+  const problems: string[] = [];
+  const services = Array.isArray(config.llm && (config.llm as Record<string, unknown>).services)
+    ? (config.llm as Record<string, unknown>).services as unknown[]
+    : [];
+  for (const [index, entry] of services.entries()) {
+    const parsed = LLMServiceEntrySchema.safeParse(entry);
+    if (!parsed.success) {
+      problems.push(
+        `llm.services[${index}]: ${parsed.error.issues.map((issue: { path: PropertyKey[]; message: string }) => `${issue.path.join(".") || "(root)"}: ${issue.message}`).join("; ")}`,
+      );
+    }
+  }
+  const mirrorParsed = LLM_MIRROR_SCHEMA.safeParse(writtenMirror);
+  if (!mirrorParsed.success) {
+    problems.push(
+      `llm: ${mirrorParsed.error.issues.map((issue: { path: PropertyKey[]; message: string }) => `${issue.path.join(".") || "(root)"}: ${issue.message}`).join("; ")}`,
+    );
+  }
+  if (problems.length > 0) {
+    throw new Error(`Sync produced an invalid LLM config; nothing was written. ${problems.join(" | ")}`);
+  }
+}
+
 export async function syncLLMConfig(
   projectRoot: string,
   options: LLMConfigSyncOptions,
@@ -92,28 +168,42 @@ export async function syncLLMConfig(
   const target = options.direction === "env-to-inkos"
     ? valuesFromConfig(config)
     : valuesFromEnv(env.values);
-  const secretPresence = await readSecretPresence(projectRoot, env.values, config, source.service ?? target.service);
+  const secretPresence = await readSecretPresence(projectRoot, env.values, config, source.service, target.service);
   if (!hasSyncValues(source)) {
-    return buildResult(options.direction, [], [], secretPresence, false, false);
+    return buildResult(options.direction, [], [], secretPresence, false, false, []);
   }
   const changes = compareValues(source, target, conflictPolicy);
+  // "conflict" is reserved for real, explainable conflict conditions. Ordinary
+  // value differences are classified as add/update/unchanged (see classifyChange),
+  // so this stays empty today; the field is kept for API compatibility.
   const conflicts = changes.filter((change) => change.action === "conflict").map((change) => change.field);
 
   if (changes.every((change) => change.action === "unchanged")) {
-    return buildResult(options.direction, changes, [], secretPresence, false, false);
-  }
-
-  if (conflicts.length > 0 && conflictPolicy === "error") {
-    return buildResult(options.direction, changes, conflicts, secretPresence, false, false);
+    return buildResult(options.direction, changes, [], secretPresence, false, false, []);
   }
 
   const shouldWrite = options.write ?? true;
   if (!shouldWrite) {
-    return buildResult(options.direction, changes, conflicts, secretPresence, false, false);
+    return buildResult(options.direction, changes, conflicts, secretPresence, false, false, []);
   }
 
+  let warnings: string[] = [];
+
   if (options.direction === "env-to-inkos") {
-    const nextConfig = applyValuesToConfig(config, source, target, conflictPolicy);
+    const prevService = target.service ?? undefined;
+    const nextService = source.service ?? "custom";
+    const serviceChanged = prevService !== undefined && prevService !== nextService;
+    // When the selected service changes, warn if the new service (source side)
+    // does not have a confirmed API key.  We do not copy or move secrets — the
+    // user must save a key for the new service manually.
+    if (serviceChanged && !secretPresence.source) {
+      warnings.push(
+        `Selected service changed from "${prevService}" to "${nextService}". ` +
+        `The new service "${nextService}" has no saved API key; ` +
+        `please save an API key for it in Studio services.`,
+      );
+    }
+    const nextConfig = applyValuesToConfig(config, source, target, conflictPolicy, prevService);
     const content = JSON.stringify(nextConfig, null, 2) + "\n";
     const currentContent = await readFile(join(projectRoot, "inkos.json"), "utf-8");
     if (content !== currentContent) {
@@ -122,7 +212,7 @@ export async function syncLLMConfig(
         writes: [{ relativePath: "inkos.json", content }],
       });
     }
-    return buildResult(options.direction, changes, conflicts, secretPresence, content !== currentContent, true);
+    return buildResult(options.direction, changes, conflicts, secretPresence, content !== currentContent, true, warnings);
   }
 
   const nextEnv = applyValuesToEnv(env.raw, source, target, conflictPolicy);
@@ -132,7 +222,7 @@ export async function syncLLMConfig(
       writes: [{ relativePath: ".env", content: nextEnv }],
     });
   }
-  return buildResult(options.direction, changes, conflicts, secretPresence, nextEnv !== env.raw, true);
+  return buildResult(options.direction, changes, conflicts, secretPresence, nextEnv !== env.raw, true, warnings);
 }
 
 async function readConfig(projectRoot: string): Promise<Record<string, unknown>> {
@@ -256,7 +346,10 @@ function classifyChange(
   if (sourceValue === undefined) return "unchanged";
   if (targetValue === undefined) return "add";
   if (sameValue(sourceValue, targetValue)) return "unchanged";
-  return conflictPolicy === "error" ? "conflict" : conflictPolicy === "source" ? "update" : "unchanged";
+  // The user explicitly chose the sync direction, so the source side is
+  // authoritative: an ordinary value difference is an update, not a blocking
+  // conflict. Only "target" (compat interface) keeps the existing target value.
+  return conflictPolicy === "target" ? "unchanged" : "update";
 }
 
 function applyValuesToConfig(
@@ -264,6 +357,8 @@ function applyValuesToConfig(
   source: SyncValues,
   target: SyncValues,
   conflictPolicy: LLMConfigSyncConflictPolicy,
+  /** The service key that was selected in inkos.json before this sync (may be undefined if not selected). */
+  prevService: string | undefined,
 ): Record<string, unknown> {
   const next = cloneRecord(config);
   const llm = recordValue(next.llm);
@@ -298,32 +393,61 @@ function applyValuesToConfig(
   const thinkingBudget = value("thinkingBudget");
   const proxyUrl = value("proxyUrl");
 
-  if (service !== undefined) llm.service = service;
-  if (provider !== undefined) llm.provider = provider;
+  const writtenMirror: Record<string, unknown> = {};
+  if (service !== undefined) {
+    llm.service = service;
+    writtenMirror.service = service;
+  }
+  if (provider !== undefined) {
+    llm.provider = provider;
+    writtenMirror.provider = provider;
+  }
   if (baseUrl !== undefined) {
-    if (!hasExistingServices) llm.baseUrl = baseUrl;
+    if (!hasExistingServices) {
+      llm.baseUrl = baseUrl;
+      writtenMirror.baseUrl = baseUrl;
+    }
     const preset = resolveServicePreset(selectedService);
     if (hasExistingServices && selectedService !== "custom" && preset?.baseUrl === baseUrl) delete entry.baseUrl;
     else entry.baseUrl = baseUrl;
   }
   if (model !== undefined) {
     llm.defaultModel = model;
-    if (!hasExistingServices) llm.model = model;
+    writtenMirror.defaultModel = model;
+    if (!hasExistingServices) {
+      llm.model = model;
+      writtenMirror.model = model;
+    }
   }
   if (apiFormat !== undefined) {
-    if (!hasExistingServices) llm.apiFormat = apiFormat;
+    if (!hasExistingServices) {
+      llm.apiFormat = apiFormat;
+      writtenMirror.apiFormat = apiFormat;
+    }
     entry.apiFormat = apiFormat;
   }
   if (stream !== undefined) {
-    if (!hasExistingServices) llm.stream = stream;
+    if (!hasExistingServices) {
+      llm.stream = stream;
+      writtenMirror.stream = stream;
+    }
     entry.stream = stream;
   }
   if (temperature !== undefined) {
-    if (!hasExistingServices) llm.temperature = temperature;
+    if (!hasExistingServices) {
+      llm.temperature = temperature;
+      writtenMirror.temperature = temperature;
+    }
     entry.temperature = temperature;
   }
-  if (thinkingBudget !== undefined) llm.thinkingBudget = thinkingBudget;
-  if (proxyUrl !== undefined) llm.proxyUrl = proxyUrl;
+  if (thinkingBudget !== undefined) {
+    llm.thinkingBudget = thinkingBudget;
+    writtenMirror.thinkingBudget = thinkingBudget;
+  }
+  if (proxyUrl !== undefined) {
+    llm.proxyUrl = proxyUrl;
+    writtenMirror.proxyUrl = proxyUrl;
+  }
 
   const extra = { ...recordValue(llm.extra) };
   for (const [key, sourceValue] of Object.entries(source.extra)) {
@@ -331,12 +455,22 @@ function applyValuesToConfig(
     if (conflictPolicy === "target" && target.extra[key] !== undefined && !sameValue(sourceValue, target.extra[key])) continue;
     extra[key] = sourceValue;
   }
-  if (Object.keys(extra).length > 0) llm.extra = extra;
+  if (Object.keys(extra).length > 0) {
+    llm.extra = extra;
+    writtenMirror.extra = extra;
+  }
 
-  const nextServices = existingServices.filter((item) => serviceEntryKey(item) !== selectedService);
+  // Replicate Studio PUT /services/config previousService semantics:
+  // when the selected service changes, the old entry is removed so it does not
+  // accumulate alongside the new one. Entries for other services are preserved.
+  const nextServices = existingServices.filter((item) => serviceEntryKey(item) !== prevService);
   nextServices.push(entry);
   llm.services = nextServices;
   llm.configSource = "studio";
+  // Apply the existing project schema to the candidate before it can be written,
+  // so an invalid value (e.g. out-of-range temperature, non-URL baseUrl) fails
+  // the whole sync instead of persisting a broken config.
+  validateCandidateConfig(next, writtenMirror);
   return next;
 }
 
@@ -398,9 +532,10 @@ function buildResult(
   direction: LLMConfigSyncDirection,
   changes: readonly LLMConfigSyncChange[],
   conflicts: readonly string[],
-  secretPresence: { readonly env: boolean; readonly inkos: boolean },
+  secretPresence: { readonly env: boolean; readonly source: boolean; readonly target: boolean },
   changed: boolean,
   wrote: boolean,
+  warnings: readonly string[],
 ): LLMConfigSyncResult {
   return {
     direction,
@@ -409,10 +544,22 @@ function buildResult(
     conflicts,
     changes,
     secret: {
-      sourcePresent: direction === "env-to-inkos" ? secretPresence.env : secretPresence.inkos,
-      targetPresent: direction === "env-to-inkos" ? secretPresence.inkos : secretPresence.env,
+      /**
+       * Whether the source side (the side being synced FROM) has an API key available.
+       * - env-to-inkos: checks INKOS_LLM_API_KEY in .env
+       * - inkos-to-env: checks secrets.json for the inkos selected service
+       */
+      sourcePresent: direction === "env-to-inkos" ? secretPresence.env : secretPresence.source,
+      /**
+       * Whether the target side (the side being synced TO) will have an API key after sync.
+       * This is checked against the service that will be selected on the target side after
+       * the sync completes — i.e. the source service for env-to-inkos, or the target
+       * service for inkos-to-env.
+       */
+      targetPresent: direction === "env-to-inkos" ? secretPresence.source : secretPresence.target,
       changed: false,
     },
+    warnings,
   };
 }
 
@@ -420,20 +567,32 @@ async function readSecretPresence(
   projectRoot: string,
   envValues: Record<string, string>,
   config: Record<string, unknown>,
-  service: string | undefined,
-): Promise<{ readonly env: boolean; readonly inkos: boolean }> {
-  let inkos = Boolean(stringValue(recordValue(config.llm).apiKey));
-  if (service) {
-    try {
-      const raw = await readFile(join(projectRoot, ".inkos", "secrets.json"), "utf-8");
-      const parsed = recordValue(JSON.parse(raw));
-      const services = recordValue(parsed.services);
-      inkos = inkos || Boolean(stringValue(recordValue(services[service]).apiKey));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  sourceService: string | undefined,
+  targetService: string | undefined,
+): Promise<{ readonly env: boolean; readonly source: boolean; readonly target: boolean }> {
+  // Secrets are keyed by service key exactly as serviceEntryKey produces.
+  // - For env (source when direction=env-to-inkos, target when direction=inkos-to-env),
+  //   keys are stored under the service name as written in .env / used at runtime.
+  // - For inkos (source when direction=inkos-to-env, target when direction=env-to-inkos),
+  //   keys are stored under the service key (preset name or custom:Name).
+  // Each side is judged against the service key it actually uses, not an aggregate.
+  let sourceKeyPresent = false;
+  let targetKeyPresent = false;
+  try {
+    const raw = await readFile(join(projectRoot, ".inkos", "secrets.json"), "utf-8");
+    const parsed = recordValue(JSON.parse(raw));
+    const services = recordValue(parsed.services);
+    if (sourceService) {
+      sourceKeyPresent = Boolean(stringValue(recordValue(services[sourceService]).apiKey));
     }
+    if (targetService) {
+      targetKeyPresent = Boolean(stringValue(recordValue(services[targetService]).apiKey));
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  return { env: Boolean(stringValue(envValues["INKOS_LLM_API_KEY"])), inkos };
+  const envPresent = Boolean(stringValue(envValues["INKOS_LLM_API_KEY"]));
+  return { env: envPresent, source: sourceKeyPresent, target: targetKeyPresent };
 }
 
 function hasSyncValues(values: SyncValues): boolean {
