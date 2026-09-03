@@ -304,7 +304,7 @@ export const doctorCommand = new Command("doctor")
           : [llmConfig.model];
         const plans = llmConfig.provider === "openai"
           ? buildDoctorProbePlans(llmConfig.apiFormat, llmConfig.stream)
-          : [{ apiFormat: (llmConfig.apiFormat ?? "chat") as "chat" | "responses", stream: llmConfig.stream ?? true }];
+          : [{ apiFormat: llmConfig.apiFormat ?? "chat", stream: llmConfig.stream ?? true }];
 
         for (const model of modelCandidates) {
           for (const plan of plans) {

@@ -67,6 +67,10 @@ import {
   normalizeSkillIdList as normalizeCoreSkillIdList,
   inferLanguage,
   ingestMaterial,
+  loadChaptersFromPath,
+  splitChapters,
+  safeChildPath,
+  type SplitChapter,
   createSkillRegistry,
   loadAvailableAgentSkills,
   activatedSkillIds,
@@ -610,6 +614,11 @@ const MAX_AGENT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 const MAX_AGENT_ATTACHMENT_TEXT_CHARS = 120_000;
 const MAX_TRANSLATION_UPLOAD_BYTES = 80 * 1024 * 1024;
 const MAX_CANON_UPLOAD_BYTES = 18 * 1024 * 1024;
+// Shared cap for existing-work import source uploads (TXT/MD). Same 18MB
+// ceiling as canon uploads — the parser and pipeline read the whole file.
+const MAX_IMPORT_UPLOAD_BYTES = MAX_CANON_UPLOAD_BYTES;
+// Preview responses list at most this many chapters; the totals stay exact.
+const IMPORT_PREVIEW_MAX_CHAPTERS_LISTED = 200;
 const MAX_SKILL_IMPORT_FILES = 128;
 const MAX_SKILL_IMPORT_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SKILL_IMPORT_TOTAL_BYTES = 8 * 1024 * 1024;
@@ -6040,6 +6049,162 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       broadcast("import:error", { bookId: id, type: "canon-file", error: String(error) });
       return c.json({ error: String(error) }, 500);
     }
+  });
+
+  // --- Import Existing Work (IMP-01/03): preview + one-step create-and-import ---
+
+  /**
+   * Resolve the import source into chapters using the same core parser the
+   * final import uses (loadChaptersFromPath / splitChapters). Never reimplement
+   * chapter parsing in React; preview and import share these exact semantics.
+   */
+  async function parseImportChaptersSource(
+    source: { readonly storedPath?: string; readonly text?: string },
+    splitRegex?: string,
+  ): Promise<ReadonlyArray<SplitChapter>> {
+    if (source.storedPath?.trim()) {
+      const safePath = safeChildPath(root, source.storedPath.trim());
+      return loadChaptersFromPath(safePath, splitRegex || undefined);
+    }
+    if (source.text?.trim()) {
+      return splitChapters(source.text, splitRegex || undefined);
+    }
+    throw new ApiError(400, "IMPORT_SOURCE_REQUIRED", "storedPath or text is required");
+  }
+
+  const NO_CHAPTERS_MESSAGE =
+    'No chapters found. The default pattern matches "第X章/第X回" and "Chapter N" heading lines. ' +
+    "Provide a custom split regex if the source uses a different heading style.";
+
+  function importPreviewPayload(chapters: ReadonlyArray<SplitChapter>) {
+    return {
+      chapterCount: chapters.length,
+      totalChars: chapters.reduce((sum, ch) => sum + ch.content.length, 0),
+      truncated: chapters.length > IMPORT_PREVIEW_MAX_CHAPTERS_LISTED,
+      chapters: chapters.slice(0, IMPORT_PREVIEW_MAX_CHAPTERS_LISTED).map((ch, i) => ({
+        index: i + 1,
+        title: ch.title,
+        charCount: ch.content.length,
+      })),
+    };
+  }
+
+  app.post("/api/v1/import/source/upload", async (c) => {
+    const body: { filename?: string; dataUrl?: string } = await c.req.json().catch(() => ({}));
+    const result = await storeProjectUpload(root, body, {
+      scope: "import-source",
+      fallbackName: "import-source",
+      maxBytes: MAX_IMPORT_UPLOAD_BYTES,
+      errorCode: "INVALID_IMPORT_UPLOAD",
+    });
+    return c.json(result);
+  });
+
+  app.post("/api/v1/import/preview", async (c) => {
+    const body: { storedPath?: string; text?: string; splitRegex?: string } = await c.req.json().catch(() => ({}));
+    try {
+      const chapters = await parseImportChaptersSource(body, body.splitRegex);
+      if (chapters.length === 0) {
+        return c.json({ error: NO_CHAPTERS_MESSAGE }, 400);
+      }
+      return c.json(importPreviewPayload(chapters));
+    } catch (e) {
+      if (e instanceof ApiError) throw e;
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  });
+
+  /**
+   * One-step "import existing work as a new book": create a bare book config
+   * (NO Architect run — importChapters generates the foundation itself), then
+   * delegate the full rebuild to PipelineRunner.importChapters().
+   *
+   * Retry semantics: if a previous run left a partial book (config exists but
+   * fewer persisted chapters than the parsed source), the run resumes from
+   * persistedChapterCount + 1 via importChapters' resumeFrom support.
+   */
+  app.post("/api/v1/books/import/init", async (c) => {
+    const body = await c.req.json<{
+      title: string; genre?: string; language?: string; platform?: string;
+      targetChapters?: number; chapterWordCount?: number;
+      storedPath?: string; text?: string; splitRegex?: string;
+      importMode?: "continuation" | "series";
+    }>();
+    if (!body.title?.trim()) {
+      return c.json({ error: "title is required" }, 400);
+    }
+
+    // Parse the source BEFORE creating any book state: a bad source or a
+    // 0-chapter parse must fail fast without leaving partial state behind.
+    let chapters: ReadonlyArray<SplitChapter>;
+    try {
+      chapters = await parseImportChaptersSource(body, body.splitRegex);
+    } catch (e) {
+      if (e instanceof ApiError) throw e;
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+    if (chapters.length === 0) {
+      return c.json({ error: NO_CHAPTERS_MESSAGE }, 400);
+    }
+
+    const now = new Date().toISOString();
+    const bookConfig = buildStudioBookConfig({
+      title: body.title,
+      genre: body.genre ?? "other",
+      language: body.language,
+      platform: body.platform,
+      targetChapters: body.targetChapters,
+      chapterWordCount: body.chapterWordCount,
+    }, now);
+    const bookId = bookConfig.id;
+    if (!bookId) {
+      return c.json({ error: "Could not derive a valid book id from title" }, 400);
+    }
+    const bookDir = state.bookDir(bookId);
+
+    // Retry/resume detection: a config on disk means a previous attempt ran.
+    let resumeFrom: number | undefined;
+    try {
+      await access(join(bookDir, "book.json"));
+      const persistedChapters = await state.getPersistedChapterCount(bookId);
+      if (persistedChapters >= chapters.length) {
+        return c.json({ error: `Book "${bookId}" already exists (${persistedChapters} chapters)` }, 409);
+      }
+      resumeFrom = persistedChapters + 1;
+    } catch {
+      // Fresh import: no prior config on disk.
+    }
+
+    broadcast("import:start", { bookId, type: "book-init", chapterCount: chapters.length, ...(resumeFrom ? { resumeFrom } : {}) });
+    bookCreateStatus.set(bookId, { status: "creating" });
+    void (async () => {
+      try {
+        // Bare book init (no Architect): config + control documents + empty
+        // chapters dir — the same minimal steps initFanficBook performs
+        // before its LLM stages, minus all LLM work.
+        await state.saveBookConfig(bookId, bookConfig);
+        await state.ensureControlDocuments(bookId);
+        await mkdir(join(bookDir, "chapters"), { recursive: true });
+
+        const pipeline = new PipelineRunner(await buildPipelineConfig());
+        const result = await pipeline.importChapters({
+          bookId,
+          chapters,
+          ...(resumeFrom ? { resumeFrom } : {}),
+          ...(body.importMode ? { importMode: body.importMode } : {}),
+        });
+        const book = await loadStudioBookListSummary(state, bookId).catch(() => undefined);
+        bookCreateStatus.delete(bookId);
+        broadcast("import:complete", { bookId, type: "book-init", count: result.importedCount });
+        broadcast("book:created", { bookId, ...(book ? { book } : {}) });
+      } catch (e) {
+        const error = e instanceof Error ? e.message : String(e);
+        bookCreateStatus.set(bookId, { status: "error", error });
+        broadcast("import:error", { bookId, type: "book-init", error });
+        broadcast("book:error", { bookId, error });
+      }
+    })();
+    return c.json({ status: "creating", bookId, ...(resumeFrom ? { resumed: true, resumeFrom } : {}) });
   });
 
   // --- Fanfic Init ---

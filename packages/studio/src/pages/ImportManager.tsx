@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { fetchJson, invalidateApiPaths, useApi, postApi } from "../hooks/use-api";
+import type { useSSE } from "../hooks/use-sse";
 import type { Theme } from "../hooks/use-theme";
 import type { TFunction } from "../hooks/use-i18n";
 import { useI18n } from "../hooks/use-i18n";
 import { useColors } from "../hooks/use-colors";
 import { tr } from "../lib/app-language";
-import { FileInput, BookCopy, Feather, BookMarked, Upload, Wand2 } from "lucide-react";
+import { FileInput, BookCopy, Feather, BookMarked, Upload, Wand2, BookPlus } from "lucide-react";
+import { ImportWizard } from "./ImportWizard";
 import { waitForStudioBookReady } from "../lib/book-ready";
 
 interface BookSummary {
@@ -15,7 +17,7 @@ interface BookSummary {
 
 interface Nav { toDashboard: () => void; toBook: (bookId: string) => void }
 
-type Tab = "chapters" | "canon" | "fanfic" | "spinoff" | "imitation";
+type Tab = "book" | "chapters" | "canon" | "fanfic" | "spinoff" | "imitation";
 
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -26,7 +28,9 @@ function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
-export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: Theme; t: TFunction; initialTab?: Tab }) {
+type SseState = ReturnType<typeof useSSE>;
+
+export function ImportManager({ nav, theme, t, initialTab, sse }: { nav: Nav; theme: Theme; t: TFunction; initialTab?: Tab; sse: SseState }) {
   const c = useColors(theme);
   const { lang } = useI18n();
   const { data: booksData } = useApi<{ books: ReadonlyArray<BookSummary> }>("/books");
@@ -178,12 +182,42 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
   };
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: "book", label: tr("导入已有作品", "Import existing work"), icon: <BookPlus size={14} /> },
     { id: "chapters", label: t("import.chapters"), icon: <FileInput size={14} /> },
     { id: "canon", label: t("import.canon"), icon: <BookCopy size={14} /> },
     { id: "fanfic", label: t("import.fanfic"), icon: <Feather size={14} /> },
     { id: "spinoff", label: t("import.spinoff"), icon: <BookMarked size={14} /> },
     { id: "imitation", label: t("import.imitation"), icon: <Wand2 size={14} /> },
   ];
+
+  // UX-01: every disabled primary action states why, in plain words.
+  const chaptersDisabledReason = !chBookId
+    ? tr("请先选择要追加章节的目标书籍", "Select a target book first")
+    : !chText.trim()
+      ? tr("请粘贴章节文本", "Paste chapter text first")
+      : null;
+  const canonDisabledReason = !canonTarget
+    ? tr("请选择要绑定母本的衍生作品（目标书籍）", "Select the derivative work (target book) to bind the canon to")
+    : canonSourceType === "book"
+      ? (!canonFrom ? tr("请选择母本来源书籍", "Select the canon source book first") : null)
+      : (!canonFile ? tr("请先上传母本文件", "Upload the canon file first") : null);
+  const fanficDisabledReason = !ffTitle.trim()
+    ? tr("请填写同人标题", "Enter the fanfic title first")
+    : !ffText.trim()
+      ? tr("请粘贴原作文本/设定资料", "Paste source material first")
+      : null;
+  const spinoffDisabledReason = !spTitle.trim()
+    ? tr("请填写番外标题", "Enter the side-story title first")
+    : !spParent
+      ? tr("请选择正传母书", "Select the parent book first")
+      : null;
+  const imitationDisabledReason = !imTitle.trim()
+    ? tr("请填写新书标题", "Enter the new book title first")
+    : !imRef.trim()
+      ? tr("请粘贴参考作品文本", "Paste the reference text first")
+      : !imIdea.trim()
+        ? tr("请填写原创故事梗概", "Enter your story idea first")
+        : null;
 
   return (
     <div className="space-y-8">
@@ -215,6 +249,8 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
 
       {/* Tab content */}
       <div className={`border ${c.cardStatic} rounded-lg p-6 space-y-4`}>
+        {tab === "book" && <ImportWizard nav={nav} theme={theme} sse={sse} />}
+
         {tab === "chapters" && (
           <>
             <select value={chBookId} onChange={(e) => setChBookId(e.target.value)}
@@ -231,7 +267,9 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
               placeholder={t("import.pasteChapters")}
               className="w-full px-3 py-2 rounded-lg bg-secondary/30 border border-border text-sm resize-none font-mono"
             />
+            {chaptersDisabledReason && <p className="text-xs text-muted-foreground">{chaptersDisabledReason}</p>}
             <button onClick={handleImportChapters} disabled={loading || !chBookId || !chText.trim()}
+              title={chaptersDisabledReason ?? undefined}
               className={`px-4 py-2 text-sm rounded-lg ${c.btnPrimary} disabled:opacity-30`}>
               {loading ? t("import.importing") : t("import.chapters")}
             </button>
@@ -241,7 +279,7 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
         {tab === "canon" && (
           <>
             <p className="text-sm text-muted-foreground">
-              {tr("母本可以来自已有 InkOS 书籍，也可以直接上传外部 TXT、Markdown 或 PDF 小说。", "Use an existing InkOS book or upload an external TXT, Markdown, or PDF novel as canon.")}
+              {tr("为衍生作品绑定母本：选择母本来源（已有 InkOS 书籍或外部 TXT/Markdown/PDF 文件），再选择要绑定到的目标书籍。绑定后母本将作为该书的正典参照。", "Bind a canon to a derivative work: choose the canon source (an existing InkOS book, or an external TXT/Markdown/PDF file) and the target book to bind it to. The bound canon becomes the book's canon reference.")}
             </p>
             <div className="inline-flex rounded-lg border border-border bg-secondary/20 p-1">
               {(["book", "file"] as const).map((sourceType) => (
@@ -275,14 +313,19 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
                 />
               </label>
             )}
+            <p className="text-xs text-muted-foreground">
+              {tr("目标书籍：绑定到哪本衍生作品", "Target book: the derivative work to bind the canon to")}
+            </p>
             <select value={canonTarget} onChange={(e) => setCanonTarget(e.target.value)}
               className="w-full px-3 py-2 rounded-lg bg-secondary/30 border border-border text-sm">
               <option value="">{t("import.selectDerivative")}</option>
               {booksData?.books.map((b) => <option key={b.id} value={b.id}>{b.title}</option>)}
             </select>
+            {canonDisabledReason && <p className="text-xs text-amber-600">{canonDisabledReason}</p>}
             <button onClick={handleImportCanon} disabled={loading || !canonTarget || (canonSourceType === "book" ? !canonFrom : !canonFile)}
+              title={canonDisabledReason ?? undefined}
               className={`px-4 py-2 text-sm rounded-lg ${c.btnPrimary} disabled:opacity-30`}>
-              {loading ? t("import.importing") : t("import.canon")}
+              {loading ? t("import.importing") : tr("绑定母本", "Bind canon")}
             </button>
           </>
         )}
@@ -318,7 +361,9 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
               placeholder={t("import.pasteMaterial")}
               className="w-full px-3 py-2 rounded-lg bg-secondary/30 border border-border text-sm resize-none font-mono"
             />
+            {fanficDisabledReason && <p className="text-xs text-muted-foreground">{fanficDisabledReason}</p>}
             <button onClick={handleFanficInit} disabled={loading || !ffTitle.trim() || !ffText.trim()}
+              title={fanficDisabledReason ?? undefined}
               className={`px-4 py-2 text-sm rounded-lg ${c.btnPrimary} disabled:opacity-30`}>
               {loading ? t("import.creating") : t("import.fanfic")}
             </button>
@@ -341,7 +386,9 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
               placeholder={t("import.spinoffDirection")}
               className="w-full px-3 py-2 rounded-lg bg-secondary/30 border border-border text-sm resize-none"
             />
+            {spinoffDisabledReason && <p className="text-xs text-muted-foreground">{spinoffDisabledReason}</p>}
             <button onClick={handleSpinoffInit} disabled={loading || !spTitle.trim() || !spParent}
+              title={spinoffDisabledReason ?? undefined}
               className={`px-4 py-2 text-sm rounded-lg ${c.btnPrimary} disabled:opacity-30`}>
               {loading ? t("import.creating") : t("import.spinoff")}
             </button>
@@ -377,7 +424,9 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
               placeholder={t("import.imitationRef")}
               className="w-full px-3 py-2 rounded-lg bg-secondary/30 border border-border text-sm resize-none font-mono"
             />
+            {imitationDisabledReason && <p className="text-xs text-muted-foreground">{imitationDisabledReason}</p>}
             <button onClick={handleImitationInit} disabled={loading || !imTitle.trim() || !imRef.trim() || !imIdea.trim()}
+              title={imitationDisabledReason ?? undefined}
               className={`px-4 py-2 text-sm rounded-lg ${c.btnPrimary} disabled:opacity-30`}>
               {loading ? t("import.creating") : t("import.imitation")}
             </button>
