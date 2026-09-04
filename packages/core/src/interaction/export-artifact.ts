@@ -1,6 +1,9 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { EPub } from "epub-gen-memory";
+import JSZip from "jszip";
+
+export type ExportPackaging = "single" | "chapters";
 
 export interface ExportStateLike {
   readonly bookDir: (bookId: string) => string;
@@ -55,6 +58,65 @@ function markdownToSimpleHtml(markdown: string): { title: string; html: string }
   return { title, html };
 }
 
+function sanitizeFileTitle(title: string): string {
+  return (
+    title
+      .replace(/[\\/:*?"<>|\x00-\x1f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80)
+    || "chapter"
+  );
+}
+
+async function buildChaptersZipArtifact(
+  state: ExportStateLike,
+  bookId: string,
+  book: { readonly title: string; readonly language?: string },
+  chapters: ReadonlyArray<{ readonly number: number; readonly status: string; readonly wordCount: number }>,
+  chapterFiles: ReadonlyMap<number, string>,
+  chaptersDir: string,
+  format: "txt" | "md",
+  approvedOnly: boolean,
+  totalWords: number,
+): Promise<{ payload: Buffer; chaptersExported: number }> {
+  const zip = new JSZip();
+  const manifest: Array<{ number: number; title: string; status: string; wordCount: number; file: string }> = [];
+  for (const chapter of chapters) {
+    const match = chapterFiles.get(chapter.number);
+    if (!match) {
+      continue;
+    }
+    const markdown = await readFile(join(chaptersDir, match), "utf-8");
+    const title = markdown.match(/^#\s+(.+)/m)?.[1]?.trim() ?? `Chapter ${chapter.number}`;
+    const fileName = `chapters/${String(chapter.number).padStart(4, "0")}-${sanitizeFileTitle(title)}.${format}`;
+    zip.file(fileName, markdown);
+    manifest.push({
+      number: chapter.number,
+      title,
+      status: chapter.status,
+      wordCount: chapter.wordCount,
+      file: fileName,
+    });
+  }
+  zip.file("book.json", JSON.stringify({
+    bookId,
+    title: book.title,
+    language: book.language === "en" ? "en" : "zh-CN",
+    format,
+    packaging: "chapters",
+    approvedOnly,
+    chaptersExported: manifest.length,
+    totalWords,
+    exportedAt: new Date().toISOString(),
+    chapters: manifest,
+  }, null, 2));
+  return {
+    payload: await zip.generateAsync({ type: "nodebuffer" }),
+    chaptersExported: manifest.length,
+  };
+}
+
 export async function buildExportArtifact(
   state: ExportStateLike,
   bookId: string,
@@ -62,9 +124,13 @@ export async function buildExportArtifact(
     readonly format?: "txt" | "md" | "epub";
     readonly approvedOnly?: boolean;
     readonly outputPath?: string;
+    readonly packaging?: ExportPackaging;
   },
 ): Promise<ExportArtifact> {
   const format = options.format ?? "txt";
+  if (options.packaging === "chapters" && format === "epub") {
+    throw new Error("EPUB export only supports single-file packaging.");
+  }
   const index = await state.loadChapterIndex(bookId);
   const book = await state.loadBookConfig(bookId);
   const chapters = options.approvedOnly
@@ -108,6 +174,29 @@ export async function buildExportArtifact(
     };
   }
 
+  if (options.packaging === "chapters") {
+    const zip = await buildChaptersZipArtifact(
+      state,
+      bookId,
+      book,
+      chapters,
+      chapterFiles,
+      chaptersDir,
+      format,
+      options.approvedOnly ?? false,
+      totalWords,
+    );
+    return {
+      outputPath,
+      fileName: `${bookId}-chapters.zip`,
+      chaptersExported: zip.chaptersExported,
+      totalWords,
+      format,
+      contentType: "application/zip",
+      payload: zip.payload,
+    };
+  }
+
   const parts: string[] = [];
   parts.push(format === "md" ? `# ${book.title}\n\n---\n` : `${book.title}\n\n`);
   for (const chapter of chapters) {
@@ -137,6 +226,7 @@ export async function writeExportArtifact(
     readonly format?: "txt" | "md" | "epub";
     readonly approvedOnly?: boolean;
     readonly outputPath?: string;
+    readonly packaging?: ExportPackaging;
   },
 ): Promise<Omit<ExportArtifact, "payload" | "contentType" | "fileName">> {
   const artifact = await buildExportArtifact(state, bookId, options);

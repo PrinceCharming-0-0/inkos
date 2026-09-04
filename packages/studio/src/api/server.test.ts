@@ -325,6 +325,8 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     isSafeBookId: actual.isSafeBookId,
     normalizePlatformOrOther: actual.normalizePlatformOrOther,
     defaultChapterLength: actual.defaultChapterLength,
+    buildExportArtifact: actual.buildExportArtifact,
+    writeExportArtifact: actual.writeExportArtifact,
     inferLanguage: actual.inferLanguage,
     ingestMaterial: actual.ingestMaterial,
     chatCompletion: chatCompletionMock,
@@ -517,6 +519,7 @@ describe("createStudioServer daemon lifecycle", () => {
     generatePlayImageMock.mockClear();
     await mkdir(join(root, "books", "demo-book", "chapters"), { recursive: true });
     await writeFile(join(root, "books", "demo-book", "chapters", "0003_Demo.md"), "# Demo\n\nBody", "utf-8");
+    await writeFile(join(root, "books", "demo-book", "book.json"), JSON.stringify({ title: "Demo Book", language: "zh", genre: "urban" }), "utf-8");
     runRadarMock.mockResolvedValue({
       marketSummary: "Fresh market summary",
       recommendations: [],
@@ -3043,6 +3046,63 @@ describe("createStudioServer daemon lifecycle", () => {
       ok: true,
       chapters: 2,
     });
+  });
+
+  it("export-save chapters-zip returns a downloadUrl (no-crash)", async () => {
+    // writeExportArtifact calls loadChapterIndex and loadBookConfig — override the
+    // beforeEach defaults so the real functions find chapter 3 (fixture file exists
+    // at books/demo-book/chapters/0003_Demo.md) and a valid book.json.
+    loadChapterIndexMock.mockResolvedValue([
+      { number: 3, title: "Demo", status: "approved", wordCount: 10 },
+    ]);
+    loadBookConfigMock.mockResolvedValue({ title: "Demo Book", language: "zh" });
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/demo-book/export-save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ format: "md", approvedOnly: false, packaging: "chapters" }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ok: true,
+      packaging: "chapters",
+      downloadUrl: expect.stringContaining("/api/export/download/"),
+    });
+    expect(body.fileId).toBeTruthy();
+
+    // download endpoint serves the file with correct content-type
+    const downloadRes = await app.request(`http://localhost${body.downloadUrl}`);
+    expect(downloadRes.status).toBe(200);
+    expect(downloadRes.headers.get("content-type")).toBe("application/zip");
+    expect(downloadRes.headers.get("content-disposition")).toMatch(/attachment/);
+  });
+
+  it("export-save rejects chapters packaging with epub", async () => {
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/demo-book/export-save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ format: "epub", packaging: "chapters" }),
+    });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/epub.*single/i);
+  });
+
+  it("download endpoint returns 404 for unknown fileId", async () => {
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/export/download/nonexistent-file-id");
+    expect(response.status).toBe(404);
   });
 
   it("creates a fresh book session on POST /api/v1/sessions", async () => {

@@ -40,6 +40,7 @@ import {
   chatCompletion,
   runWorkerAgent,
   buildExportArtifact,
+  writeExportArtifact,
   evaluateBookQuality,
   ConsolidatorAgent,
   DetectionConfigSchema,
@@ -135,7 +136,7 @@ import {
 import { isConfirmedProductionAction } from "../shared/confirmed-production.js";
 import { summarizeToolResult } from "../shared/tool-result.js";
 import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isSafeBookId } from "./safety.js";
 import { ApiError } from "./errors.js";
 import { buildStudioBookConfig } from "./book-create.js";
@@ -2567,6 +2568,17 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
   // 已删除会话的 sessionId：删除会话时中止其生产任务，任务随后的错误持久化
   // 不能把快照文件重新写回来（给已删除的会话"还魂"）。同名会话重新创建时移除标记。
   const deletedSessionIds = new Set<string>();
+  // 导出下载注册表：export-save 生成文件后登记 fileId → 磁盘路径，
+  // GET /api/export/download/:fileId 凭 fileId 回读文件并触发浏览器下载。
+  // 只登记本进程生成的路径，天然免疫路径穿越；超过上限后淘汰最早的条目。
+  const exportDownloads = new Map<string, { path: string; fileName: string; contentType: string }>();
+  const EXPORT_DOWNLOAD_LIMIT = 50;
+  const EXPORT_CONTENT_TYPES: Record<string, string> = {
+    txt: "text/plain; charset=utf-8",
+    md: "text/markdown; charset=utf-8",
+    epub: "application/epub+zip",
+    zip: "application/zip",
+  };
 
   // 已删除会话不再追加 transcript 消息：appendManualSessionMessages 底层的
   // appendTranscriptEvents 是 mkdir + appendFile，会把已删除会话的 sessions
@@ -5414,37 +5426,109 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
   });
 
   // --- Export to file (save to project dir) ---
+  //
+  // 前端拉取模式：export-save 生成文件后登记 fileId，返回 downloadUrl；
+  // 浏览器请求 GET /api/export/download/:fileId，由 Content-Disposition 触发
+  // 下载。单文件路径仍走共享结构化交互运行时（与 CLI/TUI 行为一致）；
+  // 分章 ZIP 直接复用核心 writeExportArtifact 的 chapters 打包。
 
   app.post("/api/v1/books/:id/export-save", async (c) => {
     const id = c.req.param("id");
-    const { format, approvedOnly } = await c.req.json<{ format?: string; approvedOnly?: boolean }>().catch(() => ({ format: "txt", approvedOnly: false }));
+    const { format, approvedOnly, packaging } = await c.req
+      .json<{ format?: string; approvedOnly?: boolean; packaging?: string }>()
+      .catch(() => ({ format: "txt", approvedOnly: false, packaging: "single" }));
     const fmt = format ?? "txt";
+    const chapterZip = packaging === "chapters";
+
+    if (chapterZip && fmt === "epub") {
+      return c.json({ error: "EPUB export only supports single-file packaging." }, 400);
+    }
 
     try {
-      const pipeline = new PipelineRunner(await buildPipelineConfig());
-      const tools = createInteractionToolsFromDeps(pipeline, state);
       const bookDir = state.bookDir(id);
-      const outputPath = join(bookDir, `${id}.${fmt === "epub" ? "epub" : fmt}`);
-      const result = await processProjectInteractionRequest({
-        projectRoot: root,
-        request: {
-          intent: "export_book",
-          bookId: id,
-          format: fmt as "txt" | "md" | "epub",
+      const outputPath = join(
+        bookDir,
+        chapterZip ? `${id}-chapters.zip` : `${id}.${fmt === "epub" ? "epub" : fmt}`,
+      );
+      let finalPath = outputPath;
+      let chaptersExported = 0;
+
+      if (chapterZip) {
+        const result = await writeExportArtifact(state, id, {
+          format: fmt as "txt" | "md",
           approvedOnly,
+          packaging: "chapters",
           outputPath,
-        },
-        tools,
-        activeBookId: id,
+        });
+        finalPath = result.outputPath;
+        chaptersExported = result.chaptersExported;
+      } else {
+        const pipeline = new PipelineRunner(await buildPipelineConfig());
+        const tools = createInteractionToolsFromDeps(pipeline, state);
+        const result = await processProjectInteractionRequest({
+          projectRoot: root,
+          request: {
+            intent: "export_book",
+            bookId: id,
+            format: fmt as "txt" | "md" | "epub",
+            approvedOnly,
+            outputPath,
+          },
+          tools,
+          activeBookId: id,
+        });
+        finalPath = (result.details?.outputPath as string | undefined) ?? outputPath;
+        chaptersExported = (result.details?.chaptersExported as number | undefined) ?? 0;
+      }
+
+      const resolvedPath = resolve(finalPath);
+      const fileId = randomUUID();
+      const isZip = chapterZip || fmt === "epub";
+      exportDownloads.set(fileId, {
+        path: resolvedPath,
+        fileName: basename(resolvedPath),
+        contentType: EXPORT_CONTENT_TYPES[isZip ? "zip" : fmt] ?? "application/octet-stream",
       });
+      while (exportDownloads.size > EXPORT_DOWNLOAD_LIMIT) {
+        const oldest = exportDownloads.keys().next().value;
+        if (oldest === undefined) break;
+        exportDownloads.delete(oldest);
+      }
+
       return c.json({
         ok: true,
-        path: (result.details?.outputPath as string | undefined) ?? outputPath,
+        fileId,
+        downloadUrl: `/api/export/download/${fileId}`,
+        path: finalPath,
+        relativePath: relative(root, resolvedPath),
         format: fmt,
-        chapters: (result.details?.chaptersExported as number | undefined) ?? 0,
+        packaging: chapterZip ? "chapters" : "single",
+        chapters: chaptersExported,
       });
     } catch (e) {
       return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  // --- Download a previously saved export (browser pull) ---
+
+  app.get("/api/export/download/:fileId", async (c) => {
+    const fileId = c.req.param("fileId");
+    const entry = exportDownloads.get(fileId);
+    if (!entry) {
+      return c.json({ error: "Export download not found or expired. Export again to get a new link." }, 404);
+    }
+    try {
+      const payload = await readFile(entry.path);
+      return new Response(new Uint8Array(payload), {
+        headers: {
+          "Content-Type": entry.contentType,
+          "Content-Disposition": attachmentDisposition(entry.fileName),
+        },
+      });
+    } catch {
+      exportDownloads.delete(fileId);
+      return c.json({ error: "Export file no longer exists on disk." }, 404);
     }
   });
 

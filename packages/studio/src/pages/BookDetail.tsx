@@ -6,6 +6,8 @@ import type { SSEMessage } from "../hooks/use-sse";
 import { useColors } from "../hooks/use-colors";
 import { deriveBookActivity, shouldRefetchBookView } from "../hooks/use-book-activity";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { StudioDialog } from "../components/StudioDialog";
+import { ToastViewport, useToasts } from "../components/Toast";
 import {
   ChevronLeft,
   Zap,
@@ -26,7 +28,7 @@ import {
   Trash2,
   Save,
   Hand,
-  Settings2
+  Settings2,
 } from "lucide-react";
 
 interface ChapterMeta {
@@ -54,6 +56,7 @@ interface BookData {
 type ReviseMode = "spot-fix" | "polish" | "rewrite" | "rework" | "anti-detect";
 type ExportFormat = "txt" | "md" | "epub";
 type BookStatus = "active" | "paused" | "outlining" | "completed" | "dropped";
+type ExportPackaging = "single" | "chapters";
 
 interface Nav {
   toDashboard: () => void;
@@ -82,6 +85,23 @@ const STATUS_CONFIG: Record<string, { color: string; icon: React.ReactNode }> = 
   imported: { color: "text-blue-500 bg-blue-500/10", icon: <Download size={12} /> },
 };
 
+// --- Dialog state types ---
+
+type DialogKind = "rewrite" | "revise" | "sync" | "plan" | "compose" | "foundation";
+
+interface DialogState {
+  readonly kind: DialogKind;
+  readonly chapterNum?: number;
+  readonly mode?: ReviseMode;
+  readonly brief: string;
+  readonly pending: boolean;
+  readonly error: string | null;
+}
+
+function makeDialogState(kind: DialogKind, chapterNum?: number, mode?: ReviseMode): DialogState {
+  return { kind, chapterNum, mode, brief: "", pending: false, error: null };
+}
+
 export function BookDetail({
   bookId,
   nav,
@@ -97,6 +117,8 @@ export function BookDetail({
 }) {
   const c = useColors(theme);
   const { data, loading, error, refetch } = useApi<BookData>(`/books/${bookId}`);
+  const toasts = useToasts();
+
   const [writeRequestPending, setWriteRequestPending] = useState(false);
   const [draftRequestPending, setDraftRequestPending] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -109,18 +131,29 @@ export function BookDetail({
   const [settingsTargetChapters, setSettingsTargetChapters] = useState<number | null>(null);
   const [settingsStatus, setSettingsStatus] = useState<BookStatus | null>(null);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("txt");
+  const [exportPackaging, setExportPackaging] = useState<ExportPackaging>("single");
   const [exportApprovedOnly, setExportApprovedOnly] = useState(false);
+  const [exportPending, setExportPending] = useState(false);
   const [bookActionPending, setBookActionPending] = useState<string | null>(null);
+
   // Auto (pipeline self-reviews) vs manual (write the draft and stop; you
   // run audit / revise / approve as checkpoint actions). This is scoped to
   // the current book, with project-level mode as the inherited default.
   const [reviewMode, setReviewMode] = useState<"auto" | "manual">("auto");
+
+  // Studio dialog state
+  const [dialog, setDialog] = useState<DialogState | null>(null);
+
   useEffect(() => {
     void fetchJson<{ mode?: string }>(`/books/${encodeURIComponent(bookId)}/chapter-review-mode`)
       .then((r) => setReviewMode(r.mode === "manual" ? "manual" : "auto"))
       .catch(() => undefined);
   }, [bookId]);
-  const activity = useMemo(() => deriveBookActivity(sse.messages, bookId), [bookId, sse.messages]);
+
+  const activity = useMemo(
+    () => deriveBookActivity(sse.messages, bookId),
+    [bookId, sse.messages],
+  );
   const writing = writeRequestPending || activity.writing;
   const drafting = draftRequestPending || activity.drafting;
   const latestPersistedChapter = data ? data.nextChapter - 1 : 0;
@@ -129,8 +162,8 @@ export function BookDetail({
     const recent = sse.messages.at(-1);
     if (!recent) return;
 
-    const data = recent.data as { bookId?: string } | null;
-    if (data?.bookId !== bookId) return;
+    const msg = recent.data as { bookId?: string } | null;
+    if (msg?.bookId !== bookId) return;
 
     if (recent.event === "write:start") {
       setWriteRequestPending(false);
@@ -149,13 +182,15 @@ export function BookDetail({
     }
   }, [bookId, refetch, sse.messages]);
 
+  // ── Book actions ──────────────────────────────────────────────────────────
+
   const handleWriteNext = async () => {
     setWriteRequestPending(true);
     try {
       await postApi(`/books/${bookId}/write-next`);
     } catch (e) {
       setWriteRequestPending(false);
-      alert(e instanceof Error ? e.message : "Failed");
+      toasts.error(e instanceof Error ? e.message : "Failed");
     }
   };
 
@@ -165,7 +200,7 @@ export function BookDetail({
       await postApi(`/books/${bookId}/draft`);
     } catch (e) {
       setDraftRequestPending(false);
-      alert(e instanceof Error ? e.message : "Failed");
+      toasts.error(e instanceof Error ? e.message : "Failed");
     }
   };
 
@@ -194,80 +229,185 @@ export function BookDetail({
       }
       nav.toDashboard();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Delete failed");
+      toasts.error(e instanceof Error ? e.message : "Delete failed");
     } finally {
       setDeleting(false);
     }
   };
 
-  const handleRewrite = async (chapterNum: number) => {
-    const brief = window.prompt(
-      data?.book.language === "en"
-        ? "Optional rewrite brief for this run only. Leave blank to use existing focus."
-        : "可选：输入这次重写要遵循的补充想法。留空则沿用现有 focus。",
-      "",
-    );
-    if (brief === null) return;
-    setRewritingChapters((prev) => [...prev, chapterNum]);
+  // ── Dialog open helpers ────────────────────────────────────────────────────
+
+  const openRewrite = (chapterNum: number) => {
+    setDialog(makeDialogState("rewrite", chapterNum));
+  };
+
+  const openRevise = (chapterNum: number, mode: ReviseMode) => {
+    setDialog(makeDialogState("revise", chapterNum, mode));
+  };
+
+  const openSync = (chapterNum: number) => {
+    setDialog(makeDialogState("sync", chapterNum));
+  };
+
+  const openPlan = () => {
+    setDialog(makeDialogState("plan"));
+  };
+
+  const openCompose = () => {
+    setDialog(makeDialogState("compose"));
+  };
+
+  const openFoundation = () => {
+    setDialog(makeDialogState("foundation"));
+  };
+
+  // ── Dialog submit ──────────────────────────────────────────────────────────
+
+  const handleDialogSubmit = async () => {
+    if (!dialog) return;
+    const brief = dialog.brief.trim();
+
+    // Foundation requires non-empty feedback
+    if (dialog.kind === "foundation" && !brief) {
+      setDialog({ ...dialog, error: t("dialog.foundationRequired") });
+      return;
+    }
+
+    setDialog({ ...dialog, pending: true, error: null });
+
     try {
-      await fetchJson(`/books/${bookId}/rewrite/${chapterNum}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brief: brief.trim() || undefined }),
-      });
-      refetch();
+      switch (dialog.kind) {
+        case "rewrite": {
+          const num = dialog.chapterNum!;
+          setRewritingChapters((prev) => [...prev, num]);
+          try {
+            await fetchJson(`/books/${bookId}/rewrite/${num}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ brief: brief || undefined }),
+            });
+            refetch();
+            setDialog(null);
+          } catch (e) {
+            setDialog({ ...dialog, pending: false, error: e instanceof Error ? e.message : "Rewrite failed" });
+          } finally {
+            setRewritingChapters((prev) => prev.filter((n) => n !== num));
+          }
+          return;
+        }
+
+        case "revise": {
+          const num = dialog.chapterNum!;
+          const mode = dialog.mode!;
+          setRevisingChapters((prev) => [...prev, num]);
+          try {
+            await fetchJson(`/books/${bookId}/revise/${num}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ mode, brief: brief || undefined }),
+            });
+            refetch();
+            setDialog(null);
+          } catch (e) {
+            setDialog({ ...dialog, pending: false, error: e instanceof Error ? e.message : "Revision failed" });
+          } finally {
+            setRevisingChapters((prev) => prev.filter((n) => n !== num));
+          }
+          return;
+        }
+
+        case "sync": {
+          const num = dialog.chapterNum!;
+          setSyncingChapters((prev) => [...prev, num]);
+          try {
+            await fetchJson(`/books/${bookId}/resync/${num}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ brief: brief || undefined }),
+            });
+            refetch();
+            setDialog(null);
+          } catch (e) {
+            setDialog({ ...dialog, pending: false, error: e instanceof Error ? e.message : "Sync failed" });
+          } finally {
+            setSyncingChapters((prev) => prev.filter((n) => n !== num));
+          }
+          return;
+        }
+
+        case "plan": {
+          try {
+            const result = await fetchJson<{ chapterNumber?: number; title?: string }>(
+              `/books/${bookId}/plan`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ context: brief || undefined }),
+              },
+            );
+            toasts.success(
+              data?.book.language === "en"
+                ? `Planned chapter ${result.chapterNumber ?? "?"}: ${result.title ?? ""}`
+                : `已计划第 ${result.chapterNumber ?? "?"} 章：${result.title ?? ""}`,
+            );
+            refetch();
+            setDialog(null);
+          } catch (e) {
+            setDialog({ ...dialog, pending: false, error: e instanceof Error ? e.message : "Plan failed" });
+          }
+          return;
+        }
+
+        case "compose": {
+          try {
+            const result = await fetchJson<{ chapterNumber?: number; title?: string }>(
+              `/books/${bookId}/compose`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ context: brief || undefined }),
+              },
+            );
+            toasts.success(
+              data?.book.language === "en"
+                ? `Composed chapter ${result.chapterNumber ?? "?"}: ${result.title ?? ""}`
+                : `已组装第 ${result.chapterNumber ?? "?"} 章：${result.title ?? ""}`,
+            );
+            refetch();
+            setDialog(null);
+          } catch (e) {
+            setDialog({ ...dialog, pending: false, error: e instanceof Error ? e.message : "Compose failed" });
+          }
+          return;
+        }
+
+        case "foundation": {
+          setBookActionPending("revise-foundation");
+          try {
+            await fetchJson(`/books/${bookId}/foundation/revise`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ feedback: brief }),
+            });
+            toasts.success(
+              data?.book.language === "en" ? "Foundation revised." : "基础设定已重修。",
+            );
+            refetch();
+            setDialog(null);
+          } catch (e) {
+            setDialog({ ...dialog, pending: false, error: e instanceof Error ? e.message : "Failed" });
+          } finally {
+            setBookActionPending(null);
+          }
+          return;
+        }
+      }
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Rewrite failed");
-    } finally {
-      setRewritingChapters((prev) => prev.filter((n) => n !== chapterNum));
+      setDialog({ ...dialog, pending: false, error: e instanceof Error ? e.message : "Unexpected error" });
     }
   };
 
-  const handleRevise = async (chapterNum: number, mode: ReviseMode) => {
-    const brief = window.prompt(
-      data?.book.language === "en"
-        ? "Optional revise brief for this run only. Leave blank to use existing focus."
-        : "可选：输入这次修订要遵循的补充想法。留空则沿用现有 focus。",
-      "",
-    );
-    if (brief === null) return;
-    setRevisingChapters((prev) => [...prev, chapterNum]);
-    try {
-      await fetchJson(`/books/${bookId}/revise/${chapterNum}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, brief: brief.trim() || undefined }),
-      });
-      refetch();
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Revision failed");
-    } finally {
-      setRevisingChapters((prev) => prev.filter((n) => n !== chapterNum));
-    }
-  };
-
-  const handleSync = async (chapterNum: number) => {
-    const brief = window.prompt(
-      data?.book.language === "en"
-        ? "Optional sync brief for interpreting the edited chapter body. Leave blank to sync directly from the text."
-        : "可选：输入这次同步时要遵循的补充说明。留空则直接按正文同步。",
-      "",
-    );
-    if (brief === null) return;
-    setSyncingChapters((prev) => [...prev, chapterNum]);
-    try {
-      await fetchJson(`/books/${bookId}/resync/${chapterNum}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brief: brief.trim() || undefined }),
-      });
-      refetch();
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Sync failed");
-    } finally {
-      setSyncingChapters((prev) => prev.filter((n) => n !== chapterNum));
-    }
-  };
+  // ── Settings ────────────────────────────────────────────────────────────────
 
   const handleSaveSettings = async () => {
     if (!data) return;
@@ -282,13 +422,16 @@ export function BookDetail({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      toasts.success(t("toast.settingsSaved"));
       refetch();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Save failed");
+      toasts.error(e instanceof Error ? e.message : "Save failed");
     } finally {
       setSavingSettings(false);
     }
   };
+
+  // ── Approve / Reject ───────────────────────────────────────────────────────
 
   const handleApproveAll = async () => {
     if (!data) return;
@@ -302,18 +445,23 @@ export function BookDetail({
       }
     }
     if (failed > 0) {
-      alert(`${failed}/${reviewable.length} approve(s) failed`);
+      toasts.error(`${failed}/${reviewable.length} approve(s) failed`);
+    } else {
+      toasts.success(t("toast.approvedAll").replace("{n}", String(reviewable.length)));
     }
     refetch();
   };
 
+  // ── Run book action (eval / consolidate / etc.) ───────────────────────────
+
   const runBookAction = async (key: string, action: () => Promise<string>) => {
     setBookActionPending(key);
     try {
-      alert(await action());
+      const result = await action();
+      toasts.success(result);
       refetch();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Action failed");
+      toasts.error(e instanceof Error ? e.message : "Action failed");
     } finally {
       setBookActionPending(null);
     }
@@ -342,88 +490,94 @@ export function BookDetail({
 
   const handleConsolidate = async () => {
     await runBookAction("consolidate", async () => {
-      const result = await fetchJson<{ archivedVolumes?: number; retainedChapters?: number }>(`/books/${bookId}/consolidate`, {
-        method: "POST",
-      });
+      const result = await fetchJson<{ archivedVolumes?: number; retainedChapters?: number }>(
+        `/books/${bookId}/consolidate`,
+        { method: "POST" },
+      );
       return data?.book.language === "en"
         ? `Consolidated ${result.archivedVolumes ?? 0} volume(s). Retained ${result.retainedChapters ?? 0} recent chapter summaries.`
         : `已归并 ${result.archivedVolumes ?? 0} 个卷摘要，保留最近 ${result.retainedChapters ?? 0} 条章节摘要。`;
     });
   };
 
-  const handleReviseFoundation = async () => {
-    const feedback = window.prompt(
-      data?.book.language === "en"
-        ? "Foundation revision feedback. This rewrites the book foundation, not chapter body."
-        : "输入重修基础设定的反馈。此操作会重写基础设定，不直接改正文。",
-      "",
-    );
-    if (!feedback?.trim()) return;
-    await runBookAction("revise-foundation", async () => {
-      await fetchJson(`/books/${bookId}/foundation/revise`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ feedback }),
-      });
-      return data?.book.language === "en" ? "Foundation revised." : "基础设定已重修。";
-    });
-  };
-
-  const handlePlan = async () => {
-    const context = window.prompt(
-      data?.book.language === "en"
-        ? "Optional planning context for the next chapter."
-        : "可选：下一章规划补充说明。",
-      "",
-    );
-    if (context === null) return;
-    await runBookAction("plan", async () => {
-      const result = await fetchJson<{ chapterNumber?: number; title?: string }>(`/books/${bookId}/plan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ context: context.trim() || undefined }),
-      });
-      return data?.book.language === "en"
-        ? `Planned chapter ${result.chapterNumber ?? "?"}: ${result.title ?? ""}`
-        : `已计划第 ${result.chapterNumber ?? "?"} 章：${result.title ?? ""}`;
-    });
-  };
-
-  const handleCompose = async () => {
-    const context = window.prompt(
-      data?.book.language === "en"
-        ? "Optional compose context for the next chapter."
-        : "可选：下一章组装补充说明。",
-      "",
-    );
-    if (context === null) return;
-    await runBookAction("compose", async () => {
-      const result = await fetchJson<{ chapterNumber?: number; title?: string }>(`/books/${bookId}/compose`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ context: context.trim() || undefined }),
-      });
-      return data?.book.language === "en"
-        ? `Composed chapter ${result.chapterNumber ?? "?"}: ${result.title ?? ""}`
-        : `已组装第 ${result.chapterNumber ?? "?"} 章：${result.title ?? ""}`;
-    });
-  };
-
   const handleRepairState = async (chapterNum: number) => {
     await runBookAction(`repair-state-${chapterNum}`, async () => {
       await fetchJson(`/books/${bookId}/repair-state/${chapterNum}`, { method: "POST" });
-      return data?.book.language === "en" ? `Chapter ${chapterNum} state repaired.` : `第 ${chapterNum} 章状态已修复。`;
+      return data?.book.language === "en"
+        ? `Chapter ${chapterNum} state repaired.`
+        : `第 ${chapterNum} 章状态已修复。`;
     });
   };
 
-  if (loading) return (
-    <div className="flex flex-col items-center justify-center py-32 space-y-4">
-      <div className="w-8 h-8 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
-      <span className="text-sm text-muted-foreground">{t("common.loading")}</span>
-    </div>
-  );
+  // ── Export ────────────────────────────────────────────────────────────────
 
-  if (error) return <div className="text-destructive p-8 bg-destructive/5 rounded-xl border border-destructive/20">Error: {error}</div>;
+  const handleExport = async () => {
+    if (!data) return;
+    setExportPending(true);
+    try {
+      const result = await fetchJson<{
+        ok: boolean;
+        downloadUrl: string;
+        path: string;
+        relativePath: string;
+        format: string;
+        packaging: string;
+        chapters: number;
+        error?: string;
+      }>(`/books/${bookId}/export-save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format: exportFormat,
+          approvedOnly: exportApprovedOnly,
+          // EPUB 仅支持单文件；切换格式时已重置，这里再防线一次
+          packaging: exportFormat === "epub" ? "single" : exportPackaging,
+        }),
+      });
+      if (!result.ok) throw new Error(result.error ?? "Export failed");
+
+      // Trigger browser download
+      const a = document.createElement("a");
+      a.href = result.downloadUrl;
+      a.download = "";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      toasts.success(
+        t("common.exportDownloadStarted"),
+        `${result.relativePath} (${result.chapters} ${t("dash.chapters")})`,
+      );
+    } catch (e) {
+      toasts.error(
+        t("common.exportFailed"),
+        e instanceof Error ? e.message : undefined,
+      );
+    } finally {
+      setExportPending(false);
+    }
+  };
+
+  // ── Derived ───────────────────────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-32 space-y-4">
+        <div className="w-8 h-8 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
+        <span className="text-sm text-muted-foreground">{t("common.loading")}</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="text-destructive p-8 bg-destructive/5 rounded-xl border border-destructive/20">
+        Error: {error}
+      </div>
+    );
+  }
+
   if (!data) return null;
 
   const { book, chapters } = data;
@@ -434,10 +588,84 @@ export function BookDetail({
   const currentTargetChapters = settingsTargetChapters ?? book.targetChapters ?? 0;
   const currentStatus = settingsStatus ?? (book.status as BookStatus);
 
-  const exportHref = `/api/v1/books/${bookId}/export?format=${exportFormat}${exportApprovedOnly ? "&approvedOnly=true" : ""}`;
+  const canExport = chapters.length > 0;
+  const epubIsZip = exportFormat === "epub";
+  const syncDisabled = (chNum: number) =>
+    chNum !== latestPersistedChapter || syncingChapters.includes(chNum);
+
+  // ── Dialog title / labels ─────────────────────────────────────────────────
+
+  const dialogTitle = dialog
+    ? (() => {
+        switch (dialog.kind) {
+          case "rewrite":
+            return t("dialog.rewriteTitle").replace(
+              "{n}",
+              String(dialog.chapterNum ?? "?"),
+            );
+          case "revise":
+            return t("dialog.reviseTitle")
+              .replace("{n}", String(dialog.chapterNum ?? "?"))
+              .replace("{mode}", dialog.mode ? t(`book.${dialog.mode === "spot-fix" ? "spotFix" : dialog.mode === "polish" ? "polish" : dialog.mode === "rework" ? "rework" : dialog.mode === "anti-detect" ? "antiDetect" : "rewrite"}`) : "");
+          case "sync":
+            return t("dialog.syncTitle").replace(
+              "{n}",
+              String(dialog.chapterNum ?? "?"),
+            );
+          case "plan":
+            return t("dialog.planTitle");
+          case "compose":
+            return t("dialog.composeTitle");
+          case "foundation":
+            return t("dialog.foundationTitle");
+        }
+      })()
+    : "";
+
+  const dialogConfirmLabel = dialog
+    ? (() => {
+        switch (dialog.kind) {
+          case "rewrite": return t("dialog.startRewrite");
+          case "revise": return t("dialog.startRevise");
+          case "sync": return t("dialog.startSync");
+          case "plan": return t("dialog.startPlan");
+          case "compose": return t("dialog.startCompose");
+          case "foundation": return t("dialog.startFoundation");
+        }
+      })()
+    : "";
+
+  const dialogLabel = dialog
+    ? (() => {
+        switch (dialog.kind) {
+          case "rewrite": return t("dialog.briefLabel");
+          case "revise": return t("dialog.briefLabel");
+          case "sync": return t("dialog.syncBriefLabel");
+          case "plan": return t("dialog.planLabel");
+          case "compose": return t("dialog.composeLabel");
+          case "foundation": return t("dialog.foundationLabel");
+        }
+      })()
+    : "";
+
+  const dialogPlaceholder = dialog
+    ? (() => {
+        switch (dialog.kind) {
+          case "rewrite": return t("dialog.briefPlaceholder");
+          case "revise": return t("dialog.briefPlaceholder");
+          case "sync": return t("dialog.syncBriefPlaceholder");
+          case "plan": return t("dialog.planPlaceholder");
+          case "compose": return t("dialog.composePlaceholder");
+          case "foundation": return t("dialog.foundationPlaceholder");
+        }
+      })()
+    : "";
 
   return (
     <div className="space-y-8 fade-in">
+      {/* Toast viewport */}
+      <ToastViewport toasts={toasts.toasts} onDismiss={toasts.dismiss} />
+
       {/* Breadcrumbs */}
       <nav className="flex items-center gap-2 text-[13px] font-medium text-muted-foreground">
         <button
@@ -457,18 +685,26 @@ export function BookDetail({
           <div className="flex items-center gap-3">
             <h1 className="text-4xl font-serif font-medium">{book.title}</h1>
             {book.language === "en" && (
-              <span className="px-1.5 py-0.5 rounded border border-primary/20 text-primary text-[10px] font-bold">EN</span>
+              <span className="px-1.5 py-0.5 rounded border border-primary/20 text-primary text-[10px] font-bold">
+                EN
+              </span>
             )}
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted-foreground font-medium">
-            <span className="px-2 py-0.5 rounded bg-secondary/50 text-foreground/70 uppercase tracking-wider text-xs">{book.genre}</span>
+            <span className="px-2 py-0.5 rounded bg-secondary/50 text-foreground/70 uppercase tracking-wider text-xs">
+              {book.genre}
+            </span>
             <div className="flex items-center gap-1.5">
               <FileText size={14} />
-              <span>{chapters.length} {t("dash.chapters")}</span>
+              <span>
+                {chapters.length} {t("dash.chapters")}
+              </span>
             </div>
             <div className="flex items-center gap-1.5">
               <Zap size={14} />
-              <span>{totalWords.toLocaleString()} {t("book.words")}</span>
+              <span>
+                {totalWords.toLocaleString()} {t("book.words")}
+              </span>
             </div>
             {book.fanficMode && (
               <span className="flex items-center gap-1 text-purple-500">
@@ -485,7 +721,11 @@ export function BookDetail({
             disabled={writing || drafting}
             className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold bg-primary text-primary-foreground rounded-xl hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
           >
-            {writing ? <div className="w-4 h-4 border-2 border-primary-foreground/20 border-t-primary-foreground rounded-full animate-spin" /> : <Zap size={16} />}
+            {writing ? (
+              <div className="w-4 h-4 border-2 border-primary-foreground/20 border-t-primary-foreground rounded-full animate-spin" />
+            ) : (
+              <Zap size={16} />
+            )}
             {writing ? t("dash.writing") : t("book.writeNext")}
           </button>
           <button
@@ -493,14 +733,20 @@ export function BookDetail({
             disabled={writing || drafting}
             className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold bg-secondary text-foreground rounded-xl hover:bg-secondary/80 transition-all border border-border/50 disabled:opacity-50"
           >
-            {drafting ? <div className="w-4 h-4 border-2 border-muted-foreground/20 border-t-muted-foreground rounded-full animate-spin" /> : <Wand2 size={16} />}
+            {drafting ? (
+              <div className="w-4 h-4 border-2 border-muted-foreground/20 border-t-muted-foreground rounded-full animate-spin" />
+            ) : (
+              <Wand2 size={16} />
+            )}
             {drafting ? t("book.drafting") : t("book.draftOnly")}
           </button>
           <button
             onClick={handleToggleReviewMode}
-            title={reviewMode === "manual"
-              ? "手动审查：写完即停，由你点 审稿/修订/通过（更快、更可控）。点此切回自动。"
-              : "自动审查：写完自动审校并按需重写（更省心，但更慢）。点此切到手动·写完即停。"}
+            title={
+              reviewMode === "manual"
+                ? "手动审查：写完即停，由你点 审稿/修订/通过（更快、更可控）。点此切回自动。"
+                : "自动审查：写完自动审校并按需重写（更省心，但更慢）。点此切到手动·写完即停。"
+            }
             className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium bg-secondary/60 text-foreground rounded-xl border border-border/50 hover:bg-secondary transition-all"
           >
             {reviewMode === "manual" ? <Hand size={16} /> : <Settings2 size={16} />}
@@ -511,12 +757,17 @@ export function BookDetail({
             disabled={deleting}
             className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold bg-destructive/10 text-destructive rounded-xl hover:bg-destructive hover:text-white transition-all border border-destructive/20 disabled:opacity-50"
           >
-            {deleting ? <div className="w-4 h-4 border-2 border-destructive/20 border-t-destructive rounded-full animate-spin" /> : <Trash2 size={16} />}
+            {deleting ? (
+              <div className="w-4 h-4 border-2 border-destructive/20 border-t-destructive rounded-full animate-spin" />
+            ) : (
+              <Trash2 size={16} />
+            )}
             {deleting ? t("common.loading") : t("book.deleteBook")}
           </button>
         </div>
       </div>
 
+      {/* Pipeline banner */}
       {(writing || drafting || activity.lastError) && (
         <div
           className={`rounded-2xl border px-4 py-3 text-sm ${
@@ -539,115 +790,142 @@ export function BookDetail({
 
       {/* Tool Strip */}
       <div className="flex flex-wrap items-center gap-2 py-1">
-          {reviewCount > 0 && (
+        {reviewCount > 0 && (
+          <button
+            onClick={handleApproveAll}
+            className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-emerald-500/10 text-emerald-600 rounded-lg hover:bg-emerald-500/20 transition-all border border-emerald-500/20"
+          >
+            <CheckCheck size={14} />
+            {t("book.approveAll")} ({reviewCount})
+          </button>
+        )}
+        <button
+          onClick={() => nav.toTruth(bookId)}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50"
+        >
+          <Database size={14} />
+          {t("book.truthFiles")}
+        </button>
+        <button
+          onClick={() => nav.toAnalytics(bookId)}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50"
+        >
+          <BarChart2 size={14} />
+          {t("book.analytics")}
+        </button>
+        <button
+          onClick={handleEvaluate}
+          disabled={bookActionPending === "eval"}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 disabled:opacity-50"
+        >
+          <Search size={14} />
+          {bookActionPending === "eval" ? t("common.loading") : t("book.evaluate")}
+        </button>
+        <button
+          onClick={handleConsolidate}
+          disabled={bookActionPending === "consolidate"}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 disabled:opacity-50"
+        >
+          <Database size={14} />
+          {bookActionPending === "consolidate" ? t("common.loading") : t("book.consolidate")}
+        </button>
+        <button
+          onClick={openFoundation}
+          disabled={bookActionPending === "revise-foundation"}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 disabled:opacity-50"
+        >
+          <Sparkles size={14} />
+          {bookActionPending === "revise-foundation" ? t("common.loading") : t("book.reviseFoundation")}
+        </button>
+        <button
+          onClick={openPlan}
+          disabled={bookActionPending === "plan"}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 disabled:opacity-50"
+        >
+          <FileText size={14} />
+          {bookActionPending === "plan" ? t("common.loading") : t("book.planNext")}
+        </button>
+        <button
+          onClick={openCompose}
+          disabled={bookActionPending === "compose"}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 disabled:opacity-50"
+        >
+          <Wand2 size={14} />
+          {bookActionPending === "compose" ? t("common.loading") : t("book.composeNext")}
+        </button>
+
+        {/* Export controls */}
+        <div className="flex items-center gap-2 ml-auto">
+          <select
+            value={exportFormat}
+            onChange={(e) => {
+              const fmt = e.target.value as ExportFormat;
+              setExportFormat(fmt);
+              // EPUB 不支持分章 ZIP，切到 EPUB 时重置打包方式
+              if (fmt === "epub") setExportPackaging("single");
+            }}
+            className="px-2 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg border border-border/50 outline-none focus:border-primary/50"
+          >
+            <option value="txt">TXT</option>
+            <option value="md">MD</option>
+            <option value="epub">EPUB</option>
+          </select>
+          <select
+            value={exportPackaging}
+            onChange={(e) => setExportPackaging(e.target.value as ExportPackaging)}
+            disabled={epubIsZip}
+            className="px-2 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg border border-border/50 outline-none focus:border-primary/50 disabled:opacity-40"
+            title={epubIsZip ? t("common.epubZipHint") : undefined}
+          >
+            <option value="single">{t("common.exportSingle")}</option>
+            <option value="chapters">{t("common.exportChapters")}</option>
+          </select>
+          <label className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={exportApprovedOnly}
+              onChange={(e) => setExportApprovedOnly(e.target.checked)}
+              className="rounded border-border/50"
+            />
+            {t("book.approvedOnly")}
+          </label>
+          <div className="flex flex-col gap-0.5">
             <button
-              onClick={handleApproveAll}
-              className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-emerald-500/10 text-emerald-600 rounded-lg hover:bg-emerald-500/20 transition-all border border-emerald-500/20"
+              onClick={handleExport}
+              disabled={exportPending || !canExport}
+              className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <CheckCheck size={14} />
-              {t("book.approveAll")} ({reviewCount})
+              {exportPending ? (
+                <div className="w-3.5 h-3.5 border-2 border-muted-foreground/20 border-t-muted-foreground rounded-full animate-spin" />
+              ) : (
+                <Download size={14} />
+              )}
+              {exportPending ? t("common.loading") : t("book.export")}
             </button>
-          )}
-          <button
-            onClick={() => nav.toTruth(bookId)}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50"
-          >
-            <Database size={14} />
-            {t("book.truthFiles")}
-          </button>
-          <button
-            onClick={() => nav.toAnalytics(bookId)}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50"
-          >
-            <BarChart2 size={14} />
-            {t("book.analytics")}
-          </button>
-          <button
-            onClick={handleEvaluate}
-            disabled={bookActionPending === "eval"}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 disabled:opacity-50"
-          >
-            <Search size={14} />
-            {bookActionPending === "eval" ? t("common.loading") : t("book.evaluate")}
-          </button>
-          <button
-            onClick={handleConsolidate}
-            disabled={bookActionPending === "consolidate"}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 disabled:opacity-50"
-          >
-            <Database size={14} />
-            {bookActionPending === "consolidate" ? t("common.loading") : t("book.consolidate")}
-          </button>
-          <button
-            onClick={handleReviseFoundation}
-            disabled={bookActionPending === "revise-foundation"}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 disabled:opacity-50"
-          >
-            <Sparkles size={14} />
-            {bookActionPending === "revise-foundation" ? t("common.loading") : t("book.reviseFoundation")}
-          </button>
-          <button
-            onClick={handlePlan}
-            disabled={bookActionPending === "plan"}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 disabled:opacity-50"
-          >
-            <FileText size={14} />
-            {bookActionPending === "plan" ? t("common.loading") : t("book.planNext")}
-          </button>
-          <button
-            onClick={handleCompose}
-            disabled={bookActionPending === "compose"}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 disabled:opacity-50"
-          >
-            <Wand2 size={14} />
-            {bookActionPending === "compose" ? t("common.loading") : t("book.composeNext")}
-          </button>
-          <div className="flex items-center gap-2">
-            <select
-              value={exportFormat}
-              onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
-              className="px-2 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg border border-border/50 outline-none"
-            >
-              <option value="txt">TXT</option>
-              <option value="md">MD</option>
-              <option value="epub">EPUB</option>
-            </select>
-            <label className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={exportApprovedOnly}
-                onChange={(e) => setExportApprovedOnly(e.target.checked)}
-                className="rounded border-border/50"
-              />
-              {t("book.approvedOnly")}
-            </label>
-            <button
-              onClick={async () => {
-                try {
-                  const data = await fetchJson<{ path?: string; chapters?: number }>(`/books/${bookId}/export-save`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ format: exportFormat, approvedOnly: exportApprovedOnly }),
-                  });
-                  alert(`${t("common.exportSuccess")}\n${data.path}\n(${data.chapters} ${t("dash.chapters")})`);
-                } catch (e) {
-                  alert(e instanceof Error ? e.message : "Export failed");
-                }
-              }}
-              className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50"
-            >
-              <Download size={14} />
-              {t("book.export")}
-            </button>
+            {!canExport && (
+              <span className="text-[10px] text-muted-foreground text-center whitespace-nowrap">
+                {t("common.exportNoChapters")}
+              </span>
+            )}
+            {epubIsZip && exportPackaging === "chapters" && (
+              <span className="text-[10px] text-amber-600 text-center whitespace-nowrap">
+                {t("common.epubZipHint")}
+              </span>
+            )}
           </div>
+        </div>
       </div>
 
       {/* Book Settings */}
       <div className="paper-sheet rounded-2xl border border-border/40 shadow-sm p-6">
-        <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground mb-4">{t("book.settings")}</h2>
+        <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground mb-4">
+          {t("book.settings")}
+        </h2>
         <div className="flex flex-wrap items-end gap-4">
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{t("create.wordsPerChapter")}</label>
+            <label className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+              {t("create.wordsPerChapter")}
+            </label>
             <input
               type="number"
               value={currentWordCount}
@@ -656,7 +934,9 @@ export function BookDetail({
             />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{t("create.targetChapters")}</label>
+            <label className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+              {t("create.targetChapters")}
+            </label>
             <input
               type="number"
               value={currentTargetChapters}
@@ -665,7 +945,9 @@ export function BookDetail({
             />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{t("book.status")}</label>
+            <label className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+              {t("book.status")}
+            </label>
             <select
               value={currentStatus}
               onChange={(e) => setSettingsStatus(e.target.value as BookStatus)}
@@ -683,7 +965,11 @@ export function BookDetail({
             disabled={savingSettings}
             className="flex items-center gap-2 px-4 py-2 text-sm font-bold bg-primary text-primary-foreground rounded-lg hover:scale-105 active:scale-95 transition-all disabled:opacity-50"
           >
-            {savingSettings ? <div className="w-4 h-4 border-2 border-primary-foreground/20 border-t-primary-foreground rounded-full animate-spin" /> : <Save size={14} />}
+            {savingSettings ? (
+              <div className="w-4 h-4 border-2 border-primary-foreground/20 border-t-primary-foreground rounded-full animate-spin" />
+            ) : (
+              <Save size={14} />
+            )}
             {savingSettings ? t("book.saving") : t("book.save")}
           </button>
         </div>
@@ -695,127 +981,197 @@ export function BookDetail({
           <table className="w-full text-sm border-collapse">
             <thead>
               <tr className="bg-muted/30 border-b border-border/50">
-                <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground w-16">#</th>
-                <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground">{t("book.manuscriptTitle")}</th>
-                <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground w-28">{t("book.words")}</th>
-                <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground w-36">{t("book.status")}</th>
-                <th className="text-right px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground">{t("book.curate")}</th>
+                <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground w-16">
+                  #
+                </th>
+                <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground">
+                  {t("book.manuscriptTitle")}
+                </th>
+                <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground w-28">
+                  {t("book.words")}
+                </th>
+                <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground w-36">
+                  {t("book.status")}
+                </th>
+                <th className="text-right px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground">
+                  {t("book.curate")}
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
               {chapters.map((ch, index) => {
                 const staggerClass = `stagger-${Math.min(index + 1, 5)}`;
+                const isSyncing = syncingChapters.includes(ch.number);
+                const isSyncingDisabled = syncDisabled(ch.number);
+                const isRevising = revisingChapters.includes(ch.number);
+                const isRewriting = rewritingChapters.includes(ch.number);
                 return (
-                <tr key={ch.number} className={`group hover:bg-primary/[0.02] transition-colors fade-in ${staggerClass}`}>
-                  <td className="px-6 py-4 text-muted-foreground/60 font-mono text-xs">{ch.number.toString().padStart(2, '0')}</td>
-                  <td className="px-6 py-4">
-                    <button
-                      onClick={() => nav.toChapter(bookId, ch.number)}
-                      className="font-serif text-lg font-medium hover:text-primary transition-colors text-left"
-                    >
-                      {ch.title || t("chapter.label").replace("{n}", String(ch.number))}
-                    </button>
-                  </td>
-                  <td className="px-6 py-4 text-muted-foreground font-medium tabular-nums text-xs">{(ch.wordCount ?? 0).toLocaleString()}</td>
-                  <td className="px-6 py-4">
-                    <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-tight ${STATUS_CONFIG[ch.status]?.color ?? "bg-muted text-muted-foreground"}`}>
-                      {STATUS_CONFIG[ch.status]?.icon}
-                      {translateChapterStatus(ch.status, t)}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex gap-1.5 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
-                      {ch.status === "ready-for-review" && (
-                        <>
-                          <button
-                            onClick={async () => {
-                              try { await postApi(`/books/${bookId}/chapters/${ch.number}/approve`); refetch(); }
-                              catch (e) { alert(e instanceof Error ? e.message : "Approve failed"); }
-                            }}
-                            className="p-2 rounded-lg bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500 hover:text-white transition-all shadow-sm"
-                            title={t("book.approve")}
-                          >
-                            <Check size={14} />
-                          </button>
-                          <button
-                            onClick={async () => {
-                              try { await postApi(`/books/${bookId}/chapters/${ch.number}/reject`); refetch(); }
-                              catch (e) { alert(e instanceof Error ? e.message : "Reject failed"); }
-                            }}
-                            className="p-2 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive hover:text-white transition-all shadow-sm"
-                            title={t("book.reject")}
-                          >
-                            <X size={14} />
-                          </button>
-                        </>
-                      )}
+                  <tr
+                    key={ch.number}
+                    className={`hover:bg-primary/[0.02] transition-colors fade-in ${staggerClass}`}
+                  >
+                    <td className="px-6 py-4 text-muted-foreground/60 font-mono text-xs">
+                      {ch.number.toString().padStart(2, "0")}
+                    </td>
+                    <td className="px-6 py-4">
                       <button
-                        onClick={async () => {
-                          try {
-                            const auditResult = await fetchJson<{ passed?: boolean; issues?: unknown[] }>(`/books/${bookId}/audit/${ch.number}`, { method: "POST" });
-                            alert(auditResult.passed ? "Audit passed" : `Audit failed: ${auditResult.issues?.length ?? 0} issues`);
-                            refetch();
-                          } catch (e) {
-                            alert(e instanceof Error ? e.message : "Audit failed");
-                          }
-                        }}
-                        className="p-2 rounded-lg bg-secondary text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all shadow-sm"
-                        title={t("book.audit")}
+                        onClick={() => nav.toChapter(bookId, ch.number)}
+                        className="font-serif text-lg font-medium hover:text-primary transition-colors text-left"
                       >
-                        <ShieldCheck size={14} />
+                        {ch.title || t("chapter.label").replace("{n}", String(ch.number))}
                       </button>
-                      <button
-                        onClick={() => handleRewrite(ch.number)}
-                        disabled={rewritingChapters.includes(ch.number)}
-                        className="p-2 rounded-lg bg-secondary text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all shadow-sm disabled:opacity-50"
-                        title={t("book.rewrite")}
+                    </td>
+                    <td className="px-6 py-4 text-muted-foreground font-medium tabular-nums text-xs">
+                      {(ch.wordCount ?? 0).toLocaleString()}
+                    </td>
+                    <td className="px-6 py-4">
+                      <div
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-tight ${
+                          STATUS_CONFIG[ch.status]?.color ?? "bg-muted text-muted-foreground"
+                        }`}
                       >
-                        {rewritingChapters.includes(ch.number)
-                          ? <div className="w-3.5 h-3.5 border-2 border-muted-foreground/20 border-t-muted-foreground rounded-full animate-spin" />
-                          : <RotateCcw size={14} />}
-                      </button>
-                      <button
-                        onClick={() => handleSync(ch.number)}
-                        disabled={syncingChapters.includes(ch.number) || ch.number !== latestPersistedChapter}
-                        className="p-2 rounded-lg bg-secondary text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all shadow-sm disabled:opacity-50"
-                        title={data?.book.language === "en" ? "Sync truth/state from edited chapter" : "根据已编辑章节同步 truth/state"}
-                      >
-                        {syncingChapters.includes(ch.number)
-                          ? <div className="w-3.5 h-3.5 border-2 border-muted-foreground/20 border-t-muted-foreground rounded-full animate-spin" />
-                          : <RefreshCw size={14} />}
-                      </button>
-                      {ch.status === "state-degraded" && (
+                        {STATUS_CONFIG[ch.status]?.icon}
+                        {translateChapterStatus(ch.status, t)}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      {/* All actions always visible — no hover-only hiding */}
+                      <div className="flex gap-1.5 justify-end flex-wrap">
+                        {ch.status === "ready-for-review" && (
+                          <>
+                            <button
+                              onClick={async () => {
+                                try {
+                                  await postApi(`/books/${bookId}/chapters/${ch.number}/approve`);
+                                  refetch();
+                                } catch (e) {
+                                  toasts.error(t("toast.approveFailed"), e instanceof Error ? e.message : undefined);
+                                }
+                              }}
+                              className="p-2 rounded-lg bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500 hover:text-white transition-all shadow-sm"
+                              title={t("book.approve")}
+                            >
+                              <Check size={14} />
+                            </button>
+                            <button
+                              onClick={async () => {
+                                try {
+                                  await postApi(`/books/${bookId}/chapters/${ch.number}/reject`);
+                                  refetch();
+                                } catch (e) {
+                                  toasts.error(t("toast.rejectFailed"), e instanceof Error ? e.message : undefined);
+                                }
+                              }}
+                              className="p-2 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive hover:text-white transition-all shadow-sm"
+                              title={t("book.reject")}
+                            >
+                              <X size={14} />
+                            </button>
+                          </>
+                        )}
+
+                        {/* Audit */}
                         <button
-                          onClick={() => handleRepairState(ch.number)}
-                          disabled={bookActionPending === `repair-state-${ch.number}`}
-                          className="p-2 rounded-lg bg-amber-500/10 text-amber-600 hover:bg-amber-500 hover:text-white transition-all shadow-sm disabled:opacity-50"
-                          title={t("book.repairState")}
+                          onClick={async () => {
+                            try {
+                              const result = await fetchJson<{ passed?: boolean; issues?: unknown[] }>(
+                                `/books/${bookId}/audit/${ch.number}`,
+                                { method: "POST" },
+                              );
+                              if (result.passed) {
+                                toasts.success(t("toast.auditPassed"));
+                              } else {
+                                const n = result.issues?.length ?? 0;
+                                toasts.error(
+                                  t("toast.auditFailed").replace("{n}", String(n)),
+                                );
+                              }
+                              refetch();
+                            } catch (e) {
+                              toasts.error(
+                                e instanceof Error ? e.message : "Audit failed",
+                              );
+                            }
+                          }}
+                          className="p-2 rounded-lg bg-secondary text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all shadow-sm"
+                          title={t("book.audit")}
                         >
-                          {bookActionPending === `repair-state-${ch.number}`
-                            ? <div className="w-3.5 h-3.5 border-2 border-amber-600/20 border-t-amber-600 rounded-full animate-spin" />
-                            : <Settings2 size={14} />}
+                          <ShieldCheck size={14} />
                         </button>
-                      )}
-                      <select
-                        disabled={revisingChapters.includes(ch.number)}
-                        value=""
-                        onChange={(e) => {
-                          const mode = e.target.value as ReviseMode;
-                          if (mode) handleRevise(ch.number, mode);
-                        }}
-                        className="px-2 py-1.5 text-[11px] font-bold rounded-lg bg-secondary text-muted-foreground border border-border/50 outline-none hover:text-primary hover:bg-primary/10 transition-all disabled:opacity-50 cursor-pointer"
-                        title="Revise with AI"
-                      >
-                        <option value="" disabled>{revisingChapters.includes(ch.number) ? t("common.loading") : t("book.curate")}</option>
-                        <option value="spot-fix">{t("book.spotFix")}</option>
-                        <option value="polish">{t("book.polish")}</option>
-                        <option value="rewrite">{t("book.rewrite")}</option>
-                        <option value="rework">{t("book.rework")}</option>
-                        <option value="anti-detect">{t("book.antiDetect")}</option>
-                      </select>
-                    </div>
-                  </td>
-                </tr>
+
+                        {/* Rewrite */}
+                        <button
+                          onClick={() => openRewrite(ch.number)}
+                          disabled={isRewriting}
+                          className="p-2 rounded-lg bg-secondary text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all shadow-sm disabled:opacity-50"
+                          title={t("book.rewrite")}
+                        >
+                          {isRewriting ? (
+                            <div className="w-3.5 h-3.5 border-2 border-muted-foreground/20 border-t-muted-foreground rounded-full animate-spin" />
+                          ) : (
+                            <RotateCcw size={14} />
+                          )}
+                        </button>
+
+                        {/* Sync */}
+                        <button
+                          onClick={() => openSync(ch.number)}
+                          disabled={isSyncing || isSyncingDisabled}
+                          className="p-2 rounded-lg bg-secondary text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all shadow-sm disabled:opacity-50"
+                          title={
+                            isSyncingDisabled
+                              ? t("toast.syncLatestOnly")
+                              : book.language === "en"
+                                ? "Sync truth/state from edited chapter"
+                                : "根据已编辑章节同步 truth/state"
+                          }
+                        >
+                          {isSyncing ? (
+                            <div className="w-3.5 h-3.5 border-2 border-muted-foreground/20 border-t-muted-foreground rounded-full animate-spin" />
+                          ) : (
+                            <RefreshCw size={14} />
+                          )}
+                        </button>
+
+                        {/* Repair state */}
+                        {ch.status === "state-degraded" && (
+                          <button
+                            onClick={() => handleRepairState(ch.number)}
+                            disabled={bookActionPending === `repair-state-${ch.number}`}
+                            className="p-2 rounded-lg bg-amber-500/10 text-amber-600 hover:bg-amber-500 hover:text-white transition-all shadow-sm disabled:opacity-50"
+                            title={t("book.repairState")}
+                          >
+                            {bookActionPending === `repair-state-${ch.number}` ? (
+                              <div className="w-3.5 h-3.5 border-2 border-amber-600/20 border-t-amber-600 rounded-full animate-spin" />
+                            ) : (
+                              <Settings2 size={14} />
+                            )}
+                          </button>
+                        )}
+
+                        {/* Revise mode select */}
+                        <select
+                          disabled={isRevising}
+                          value=""
+                          onChange={(e) => {
+                            const mode = e.target.value as ReviseMode;
+                            if (mode) openRevise(ch.number, mode);
+                          }}
+                          className="px-2 py-1.5 text-[11px] font-bold rounded-lg bg-secondary text-muted-foreground border border-border/50 outline-none hover:text-primary hover:bg-primary/10 transition-all disabled:opacity-50 cursor-pointer"
+                          title="Revise with AI"
+                        >
+                          <option value="" disabled>
+                            {isRevising ? t("common.loading") : t("book.curate")}
+                          </option>
+                          <option value="spot-fix">{t("book.spotFix")}</option>
+                          <option value="polish">{t("book.polish")}</option>
+                          <option value="rewrite">{t("book.rewrite")}</option>
+                          <option value="rework">{t("book.rework")}</option>
+                          <option value="anti-detect">{t("book.antiDetect")}</option>
+                        </select>
+                      </div>
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
@@ -825,7 +1181,7 @@ export function BookDetail({
         {chapters.length === 0 && (
           <div className="flex flex-col items-center justify-center py-20 text-center">
             <div className="w-12 h-12 rounded-full bg-muted/20 flex items-center justify-center mb-4">
-               <FileText size={20} className="text-muted-foreground/40" />
+              <FileText size={20} className="text-muted-foreground/40" />
             </div>
             <p className="text-sm italic font-serif text-muted-foreground">
               {t("book.noChapters")}
@@ -834,6 +1190,7 @@ export function BookDetail({
         )}
       </div>
 
+      {/* Confirm delete */}
       <ConfirmDialog
         open={confirmDeleteOpen}
         title={t("book.deleteBook")}
@@ -844,6 +1201,53 @@ export function BookDetail({
         onConfirm={handleDeleteBook}
         onCancel={() => setConfirmDeleteOpen(false)}
       />
+
+      {/* Studio dialog for rewrite / revise / sync / plan / compose / foundation */}
+      {dialog && (
+        <StudioDialog
+          open={true}
+          title={dialogTitle}
+          confirmLabel={dialogConfirmLabel}
+          loading={dialog.pending}
+          confirmDisabled={dialog.kind === "foundation" && !dialog.brief.trim()}
+          error={dialog.error}
+          onConfirm={handleDialogSubmit}
+          onCancel={() => {
+            if (!dialog.pending) setDialog(null);
+          }}
+          description={
+            dialog.kind === "foundation"
+              ? t("dialog.foundationLabel")
+              : undefined
+          }
+        >
+          {/* Foundation: required textarea; others: optional textarea */}
+          {dialog.kind === "foundation" ? (
+            <textarea
+              value={dialog.brief}
+              onChange={(e) => setDialog({ ...dialog, brief: e.target.value, error: null })}
+              placeholder={dialogPlaceholder}
+              rows={4}
+              className="w-full px-3 py-2 text-sm rounded-xl border border-border/50 bg-secondary/30 outline-none focus:border-primary/50 resize-y"
+              autoFocus
+            />
+          ) : (
+            <div className="space-y-1">
+              <label className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                {dialogLabel}
+              </label>
+              <textarea
+                value={dialog.brief}
+                onChange={(e) => setDialog({ ...dialog, brief: e.target.value, error: null })}
+                placeholder={dialogPlaceholder}
+                rows={3}
+                className="w-full px-3 py-2 text-sm rounded-xl border border-border/50 bg-secondary/30 outline-none focus:border-primary/50 resize-y"
+                autoFocus
+              />
+            </div>
+          )}
+        </StudioDialog>
+      )}
     </div>
   );
 }
