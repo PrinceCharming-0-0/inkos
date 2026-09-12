@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+export const API_FORMATS = ["chat", "responses"] as const;
+export type ApiFormat = (typeof API_FORMATS)[number];
+
+export function normalizeApiFormat(value: unknown): ApiFormat | undefined {
+  return API_FORMATS.find((format) => format === value);
+}
+
 // C1 (v2.0.0 breaking): `maxTokens` 字段已被 providers bank 接管；zod 用 strip mode 静默丢弃老配置里的 `maxTokens`。
 const LLMServiceEntrySchema = z.object({
   service: z.string().min(1),
@@ -7,7 +14,7 @@ const LLMServiceEntrySchema = z.object({
   baseUrl: z.string().url().optional(),
   models: z.array(z.string().min(1)).optional(),
   temperature: z.number().min(0).max(2).optional(),
-  apiFormat: z.enum(["chat", "responses"]).optional(),
+  apiFormat: z.enum(API_FORMATS).optional(),
   stream: z.boolean().optional(),
 });
 
@@ -32,7 +39,7 @@ export const LLMConfigSchema = z.object({
   thinkingBudget: z.number().int().min(0).default(0),
   extra: z.record(z.unknown()).optional(),
   headers: z.record(z.string()).optional(),
-  apiFormat: z.enum(["chat", "responses"]).default("chat"),
+  apiFormat: z.enum(API_FORMATS).default("chat"),
   stream: z.boolean().default(true),
   services: z.array(LLMServiceEntrySchema).optional(),
   defaultModel: z.string().min(1).optional(),

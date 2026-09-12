@@ -1,4 +1,5 @@
 import { getModel } from "@mariozechner/pi-ai";
+import type { ApiFormat } from "../models/project.js";
 import type { Model, Api } from "@mariozechner/pi-ai";
 import { resolveServicePiProvider, resolveServicePreset } from "./service-presets.js";
 import { getServiceApiKey } from "./secrets.js";
@@ -30,7 +31,7 @@ export async function resolveServiceModel(
   modelId: string,
   projectRoot: string,
   customBaseUrl?: string,
-  customApiFormat?: "chat" | "responses",
+  customApiFormat?: ApiFormat,
 ): Promise<ResolvedModel> {
   // Determine pi-ai provider
   const baseService = service.startsWith("custom:") ? "custom" : service;

@@ -4,6 +4,7 @@ import { useServiceStore } from "../store/service";
 import { Eye, EyeOff, Loader2, ArrowLeft, Plus, Trash2, X } from "lucide-react";
 import { ServiceQuickLinks } from "../components/ServiceQuickLinks";
 import { tr } from "../lib/app-language";
+import { normalizeApiFormat, type ApiFormat } from "@actalk/inkos-core";
 import {
   deleteServiceConfig,
   matchServiceConfigEntryForDetail,
@@ -53,7 +54,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   const [customName, setCustomName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [temperature, setTemperature] = useState("0.7");
-  const [apiFormat, setApiFormat] = useState<"chat" | "responses">("chat");
+  const [apiFormat, setApiFormat] = useState<ApiFormat>("chat");
   const [stream, setStream] = useState(true);
   const [detectedModel, setDetectedModel] = useState<string>("");
   const [detectedConfig, setDetectedConfig] = useState<DetectedConfig | null>(null);
@@ -76,7 +77,8 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
           setBaseUrl(String(matched.baseUrl ?? ""));
         }
         if (typeof matched.temperature === "number") setTemperature(String(matched.temperature));
-        if (matched.apiFormat === "chat" || matched.apiFormat === "responses") setApiFormat(matched.apiFormat);
+        const matchedApiFormat = normalizeApiFormat(matched.apiFormat);
+        if (matchedApiFormat) setApiFormat(matchedApiFormat);
         if (typeof matched.stream === "boolean") setStream(matched.stream);
         if (Array.isArray(matched.models)) {
           setConfiguredModels(mergeServiceDetailModels(matched.models.filter((model): model is string => typeof model === "string")));
@@ -360,7 +362,10 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
           <Field label={tr("协议类型", "Protocol")}>
             <select
               value={apiFormat}
-              onChange={(e) => setApiFormat(e.target.value as "chat" | "responses")}
+              onChange={(e) => {
+                const nextApiFormat = normalizeApiFormat(e.target.value);
+                if (nextApiFormat) setApiFormat(nextApiFormat);
+              }}
               className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm"
             >
               <option value="chat">Chat / Completions</option>

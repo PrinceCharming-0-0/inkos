@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { findProjectRoot, log, logError, GLOBAL_ENV_PATH } from "../utils.js";
-import { fetchWithProxy } from "@actalk/inkos-core";
+import { fetchWithProxy, type ApiFormat } from "@actalk/inkos-core";
 import {
   ensureNodeRuntimePinFiles,
   evaluateNodeRuntimeSupport,
@@ -19,12 +19,12 @@ import {
 } from "../localization.js";
 
 function buildDoctorProbePlans(
-  preferredApiFormat: "chat" | "responses" | undefined,
+  preferredApiFormat: ApiFormat | undefined,
   preferredStream: boolean | undefined,
-): Array<{ apiFormat: "chat" | "responses"; stream: boolean }> {
-  const plans: Array<{ apiFormat: "chat" | "responses"; stream: boolean }> = [];
+): Array<{ apiFormat: ApiFormat; stream: boolean }> {
+  const plans: Array<{ apiFormat: ApiFormat; stream: boolean }> = [];
   const seen = new Set<string>();
-  const push = (apiFormat: "chat" | "responses", stream: boolean) => {
+  const push = (apiFormat: ApiFormat, stream: boolean) => {
     const key = `${apiFormat}:${stream ? "1" : "0"}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -304,7 +304,7 @@ export const doctorCommand = new Command("doctor")
           : [llmConfig.model];
         const plans = llmConfig.provider === "openai"
           ? buildDoctorProbePlans(llmConfig.apiFormat, llmConfig.stream)
-          : [{ apiFormat: (llmConfig.apiFormat ?? "chat") as "chat" | "responses", stream: llmConfig.stream ?? true }];
+          : [{ apiFormat: llmConfig.apiFormat ?? "chat", stream: llmConfig.stream ?? true }];
 
         for (const model of modelCandidates) {
           for (const plan of plans) {

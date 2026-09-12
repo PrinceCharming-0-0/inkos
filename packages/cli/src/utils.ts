@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { createLLMClient, StateManager, createLogger, createStderrSink, createJsonLineSink, resolveEffectiveLLMConfig, loadLLMEnvLayers, GLOBAL_CONFIG_DIR, GLOBAL_ENV_PATH, type EffectiveLLMConfigResult, type LLMConfigCliOverrides, type ProjectConfig, type PipelineConfig, type LogSink } from "@actalk/inkos-core";
+import { createLLMClient, StateManager, createLogger, createStderrSink, createJsonLineSink, resolveEffectiveLLMConfig, loadLLMEnvLayers, GLOBAL_CONFIG_DIR, GLOBAL_ENV_PATH, normalizeApiFormat, type ApiFormat, type EffectiveLLMConfigResult, type LLMConfigCliOverrides, type ProjectConfig, type PipelineConfig, type LogSink } from "@actalk/inkos-core";
 
 export { GLOBAL_CONFIG_DIR, GLOBAL_ENV_PATH };
 
@@ -67,7 +67,7 @@ export function parseLLMOverridesFromArgv(argv: readonly string[]): LLMConfigCli
     model?: string;
     apiKeyEnv?: string;
     baseUrl?: string;
-    apiFormat?: "chat" | "responses";
+    apiFormat?: ApiFormat;
     stream?: boolean;
   } = {};
 
@@ -92,7 +92,8 @@ export function parseLLMOverridesFromArgv(argv: readonly string[]): LLMConfigCli
       if (value) overrides.baseUrl = value;
     } else if (flag === "--api-format") {
       const value = nextValue();
-      if (value === "chat" || value === "responses") overrides.apiFormat = value;
+      const apiFormat = normalizeApiFormat(value);
+      if (apiFormat) overrides.apiFormat = apiFormat;
     } else if (flag === "--stream") {
       overrides.stream = true;
     } else if (flag === "--no-stream") {

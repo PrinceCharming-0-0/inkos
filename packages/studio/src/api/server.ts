@@ -131,6 +131,8 @@ import {
   type RequestedIntent,
   type SessionKind,
   type AgentSessionAttachment,
+  normalizeApiFormat,
+  type ApiFormat,
 } from "@actalk/inkos-core";
 import { isConfirmedProductionAction } from "../shared/confirmed-production.js";
 import { summarizeToolResult } from "../shared/tool-result.js";
@@ -1639,7 +1641,7 @@ interface ServiceConfigEntry {
   baseUrl?: string;
   models?: string[];
   temperature?: number;
-  apiFormat?: "chat" | "responses";
+  apiFormat?: ApiFormat;
   stream?: boolean;
 }
 
@@ -1669,11 +1671,16 @@ interface ServiceProbeResult {
   ok: boolean;
   models: Array<{ id: string; name: string }>;
   selectedModel?: string;
-  apiFormat?: "chat" | "responses";
+  apiFormat?: ApiFormat;
   stream?: boolean;
   baseUrl?: string;
   modelsSource?: "api" | "fallback";
   error?: string;
+}
+
+function normalizedApiFormatPatch(value: unknown): { apiFormat: ApiFormat } | Record<string, never> {
+  const apiFormat = normalizeApiFormat(value);
+  return apiFormat ? { apiFormat } : {};
 }
 
 function broadcast(event: string, data: unknown): void {
@@ -1775,7 +1782,7 @@ function normalizeServiceEntry(serviceId: string, value: Record<string, unknown>
       ...(typeof value.baseUrl === "string" && value.baseUrl.length > 0 ? { baseUrl: value.baseUrl } : {}),
       ...(Array.isArray(value.models) ? { models: normalizeServiceModelIds(value.models) } : {}),
       ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
-      ...(value.apiFormat === "chat" || value.apiFormat === "responses" ? { apiFormat: value.apiFormat } : {}),
+      ...normalizedApiFormatPatch(value.apiFormat),
       ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
     };
   }
@@ -1787,7 +1794,7 @@ function normalizeServiceEntry(serviceId: string, value: Record<string, unknown>
       ...(typeof value.baseUrl === "string" && value.baseUrl.length > 0 ? { baseUrl: value.baseUrl } : {}),
       ...(Array.isArray(value.models) ? { models: normalizeServiceModelIds(value.models) } : {}),
       ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
-      ...(value.apiFormat === "chat" || value.apiFormat === "responses" ? { apiFormat: value.apiFormat } : {}),
+      ...normalizedApiFormatPatch(value.apiFormat),
       ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
     };
   }
@@ -1796,7 +1803,7 @@ function normalizeServiceEntry(serviceId: string, value: Record<string, unknown>
     service: serviceId,
     ...(Array.isArray(value.models) ? { models: normalizeServiceModelIds(value.models) } : {}),
     ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
-    ...(value.apiFormat === "chat" || value.apiFormat === "responses" ? { apiFormat: value.apiFormat } : {}),
+    ...normalizedApiFormatPatch(value.apiFormat),
     ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
   };
 }
@@ -1815,7 +1822,7 @@ function normalizeServiceConfig(raw: unknown): ServiceConfigEntry[] {
         ...(typeof entry.baseUrl === "string" && entry.baseUrl.length > 0 ? { baseUrl: entry.baseUrl } : {}),
         ...(Array.isArray(entry.models) ? { models: normalizeServiceModelIds(entry.models) } : {}),
         ...(typeof entry.temperature === "number" ? { temperature: entry.temperature } : {}),
-        ...(entry.apiFormat === "chat" || entry.apiFormat === "responses" ? { apiFormat: entry.apiFormat } : {}),
+        ...normalizedApiFormatPatch(entry.apiFormat),
         ...(typeof entry.stream === "boolean" ? { stream: entry.stream } : {}),
       }));
   }
@@ -2067,12 +2074,12 @@ async function resolveConfiguredServiceEntry(root: string, serviceId: string): P
 }
 
 function buildProbePlans(
-  preferredApiFormat: "chat" | "responses" | undefined,
+  preferredApiFormat: ApiFormat | undefined,
   preferredStream: boolean | undefined,
-): Array<{ apiFormat: "chat" | "responses"; stream: boolean }> {
-  const candidates: Array<{ apiFormat: "chat" | "responses"; stream: boolean }> = [];
+): Array<{ apiFormat: ApiFormat; stream: boolean }> {
+  const candidates: Array<{ apiFormat: ApiFormat; stream: boolean }> = [];
   const seen = new Set<string>();
-  const push = (apiFormat: "chat" | "responses", stream: boolean) => {
+  const push = (apiFormat: ApiFormat, stream: boolean) => {
     const key = `${apiFormat}:${stream ? "1" : "0"}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -2229,7 +2236,7 @@ function formatServiceProbeError(args: {
   readonly label?: string;
   readonly baseUrl: string;
   readonly model?: string;
-  readonly apiFormat?: "chat" | "responses";
+  readonly apiFormat?: ApiFormat;
   readonly stream?: boolean;
   readonly error: string;
   readonly language?: StudioLanguage;
@@ -2372,7 +2379,7 @@ async function probeServiceCapabilities(args: {
   service: string;
   apiKey: string;
   baseUrl: string;
-  preferredApiFormat?: "chat" | "responses";
+  preferredApiFormat?: ApiFormat;
   preferredStream?: boolean;
   preferredModel?: string;
   proxyUrl?: string;
@@ -3754,12 +3761,13 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
 
   app.post("/api/v1/services/:service/test", async (c) => {
     const service = c.req.param("service");
-    const { apiKey, baseUrl, apiFormat, stream } = await c.req.json<{
+    const { apiKey, baseUrl, apiFormat: rawApiFormat, stream } = await c.req.json<{
       apiKey: string;
       baseUrl?: string;
-      apiFormat?: "chat" | "responses";
+      apiFormat?: unknown;
       stream?: boolean;
     }>();
+    const apiFormat = normalizeApiFormat(rawApiFormat);
 
     const language = await currentProjectLanguage();
     const resolvedBaseUrl = await resolveConfiguredServiceBaseUrl(root, service, baseUrl);

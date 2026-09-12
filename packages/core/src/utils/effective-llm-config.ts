@@ -1,6 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ProjectConfigSchema, type LLMConfig, type ProjectConfig } from "../models/project.js";
+import { normalizeApiFormat, ProjectConfigSchema, type LLMConfig, type ProjectConfig, type ApiFormat } from "../models/project.js";
 import { loadSecrets } from "../llm/secrets.js";
 import { getEndpoint } from "../llm/providers/index.js";
 import { guessServiceFromBaseUrl, resolveServicePreset, resolveServiceProviderFamily } from "../llm/service-presets.js";
@@ -16,7 +16,7 @@ export interface LLMConfigCliOverrides {
   readonly model?: string;
   readonly apiKeyEnv?: string;
   readonly baseUrl?: string;
-  readonly apiFormat?: "chat" | "responses";
+  readonly apiFormat?: ApiFormat;
   readonly stream?: boolean;
 }
 
@@ -49,8 +49,13 @@ interface ServiceConfigEntry {
   readonly models?: readonly string[];
   readonly temperature?: number;
   readonly maxTokens?: number;
-  readonly apiFormat?: "chat" | "responses";
+  readonly apiFormat?: ApiFormat;
   readonly stream?: boolean;
+}
+
+function normalizedApiFormatPatch(value: unknown): { apiFormat: ApiFormat } | Record<string, never> {
+  const apiFormat = normalizeApiFormat(value);
+  return apiFormat ? { apiFormat } : {};
 }
 
 interface MutableDiagnostics {
@@ -360,7 +365,7 @@ function normalizeServiceEntries(raw: unknown): ServiceConfigEntry[] {
         ...(Array.isArray(entry.models) ? { models: normalizeModelIds(entry.models) } : {}),
         ...(typeof entry.temperature === "number" ? { temperature: entry.temperature } : {}),
         ...(typeof entry.maxTokens === "number" ? { maxTokens: entry.maxTokens } : {}),
-        ...(entry.apiFormat === "chat" || entry.apiFormat === "responses" ? { apiFormat: entry.apiFormat } : {}),
+        ...normalizedApiFormatPatch(entry.apiFormat),
         ...(typeof entry.stream === "boolean" ? { stream: entry.stream } : {}),
       }));
   }
@@ -383,7 +388,7 @@ function normalizeServiceEntryFromPatch(serviceId: string, value: Record<string,
       ...(Array.isArray(value.models) ? { models: normalizeModelIds(value.models) } : {}),
       ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
       ...(typeof value.maxTokens === "number" ? { maxTokens: value.maxTokens } : {}),
-      ...(value.apiFormat === "chat" || value.apiFormat === "responses" ? { apiFormat: value.apiFormat } : {}),
+      ...normalizedApiFormatPatch(value.apiFormat),
       ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
     };
   }
@@ -396,7 +401,7 @@ function normalizeServiceEntryFromPatch(serviceId: string, value: Record<string,
       ...(Array.isArray(value.models) ? { models: normalizeModelIds(value.models) } : {}),
       ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
       ...(typeof value.maxTokens === "number" ? { maxTokens: value.maxTokens } : {}),
-      ...(value.apiFormat === "chat" || value.apiFormat === "responses" ? { apiFormat: value.apiFormat } : {}),
+      ...normalizedApiFormatPatch(value.apiFormat),
       ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
     };
   }
@@ -406,7 +411,7 @@ function normalizeServiceEntryFromPatch(serviceId: string, value: Record<string,
     ...(Array.isArray(value.models) ? { models: normalizeModelIds(value.models) } : {}),
     ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
     ...(typeof value.maxTokens === "number" ? { maxTokens: value.maxTokens } : {}),
-    ...(value.apiFormat === "chat" || value.apiFormat === "responses" ? { apiFormat: value.apiFormat } : {}),
+    ...normalizedApiFormatPatch(value.apiFormat),
     ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
   };
 }

@@ -1,4 +1,4 @@
-import type { LLMConfig } from "../models/project.js";
+import type { LLMConfig, ApiFormat } from "../models/project.js";
 import {
   streamSimple as piStreamSimple,
   completeSimple as piCompleteSimple,
@@ -275,7 +275,7 @@ export interface LLMClient {
   readonly provider: "openai" | "anthropic";
   readonly service?: string;
   readonly configSource?: LLMConfig["configSource"];
-  readonly apiFormat: "chat" | "responses";
+  readonly apiFormat: ApiFormat;
   readonly stream: boolean;
   readonly proxyUrl?: string;
   readonly _piModel?: PiModel<PiApi>;

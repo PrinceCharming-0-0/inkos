@@ -6,6 +6,8 @@
  * 新模型发布 / 参数调整时手动加 card，不做持续 sync。
  */
 
+import type { ApiFormat } from "../../models/project.js";
+
 export type ApiProtocol =
   | "openai-completions"
   | "openai-responses"
@@ -60,7 +62,7 @@ export interface ProviderCompat {
 }
 
 export interface ProviderTransportDefaults {
-  readonly apiFormat?: "chat" | "responses";
+  readonly apiFormat?: ApiFormat;
   readonly stream?: boolean;
 }
 
