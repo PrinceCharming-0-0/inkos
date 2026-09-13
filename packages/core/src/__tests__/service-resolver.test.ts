@@ -222,6 +222,26 @@ describe("resolveServiceModel", () => {
     expect(result.model.api).toBe("openai-responses");
   });
 
+  it("resolves custom service with anthropic api format", async () => {
+    await mkdir(join(root, ".inkos"), { recursive: true });
+    await writeFile(
+      join(root, ".inkos", "secrets.json"),
+      JSON.stringify({ services: { "custom:内网GPT": { apiKey: "sk-corp" } } }),
+    );
+
+    const result = await resolveServiceModel(
+      "custom:内网GPT",
+      "claude-sonnet-4-6",
+      root,
+      "https://llm.internal.corp/v1",
+      "anthropic",
+    );
+
+    expect(result.model.api).toBe("anthropic-messages");
+    expect(result.model.provider).toBe("anthropic");
+    expect(result.model.baseUrl).toBe("https://llm.internal.corp/v1");
+  });
+
   it("resolves MiniMax using the OpenAI-compatible preset endpoint", async () => {
     await mkdir(join(root, ".inkos"), { recursive: true });
     await writeFile(

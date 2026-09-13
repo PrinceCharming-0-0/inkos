@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createProgram } from "../program.js";
-import { extractResponsesImageBase64, resolveCoverApiKey } from "../commands/short-fiction.js";
+import {
+  buildEnvLLMConfig,
+  extractResponsesImageBase64,
+  resolveCoverApiKey,
+} from "../commands/short-fiction.js";
 
 describe("short command", () => {
   it("registers public short run command", () => {
@@ -8,6 +12,30 @@ describe("short command", () => {
     const short = program.commands.find((command) => command.name() === "short");
     expect(short).toBeDefined();
     expect(short?.commands.some((command) => command.name() === "run")).toBe(true);
+  });
+
+  it("normalizes INKOS_LLM_API_FORMAT through the shared helper", () => {
+    const previous = process.env.INKOS_LLM_API_FORMAT;
+    try {
+      process.env.INKOS_LLM_BASE_URL = "https://api.example.com/v1";
+      process.env.INKOS_LLM_MODEL = "claude-sonnet-4-5";
+      process.env.INKOS_LLM_API_FORMAT = "anthropic";
+      expect(buildEnvLLMConfig({}).apiFormat).toBe("anthropic");
+
+      process.env.INKOS_LLM_API_FORMAT = "responses";
+      expect(buildEnvLLMConfig({}).apiFormat).toBe("responses");
+
+      delete process.env.INKOS_LLM_API_FORMAT;
+      expect(buildEnvLLMConfig({}).apiFormat).toBe("chat");
+
+      process.env.INKOS_LLM_API_FORMAT = "bogus";
+      expect(buildEnvLLMConfig({}).apiFormat).toBe("chat");
+    } finally {
+      if (previous === undefined) delete process.env.INKOS_LLM_API_FORMAT;
+      else process.env.INKOS_LLM_API_FORMAT = previous;
+      delete process.env.INKOS_LLM_BASE_URL;
+      delete process.env.INKOS_LLM_MODEL;
+    }
   });
 
   it("exposes cover generation options on short run", () => {

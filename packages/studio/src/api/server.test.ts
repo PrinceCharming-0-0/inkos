@@ -324,6 +324,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     computeAnalytics: vi.fn(() => ({})),
     isSafeBookId: actual.isSafeBookId,
     normalizePlatformOrOther: actual.normalizePlatformOrOther,
+    normalizeApiFormat: actual.normalizeApiFormat,
     defaultChapterLength: actual.defaultChapterLength,
     inferLanguage: actual.inferLanguage,
     ingestMaterial: actual.ingestMaterial,
@@ -1468,6 +1469,100 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(raw.llm.baseUrl).toBe("https://api.kkaiapi.com/v1");
   });
 
+  it("persists anthropic apiFormat and mirrors provider for custom services", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        provider: "openai",
+        service: "custom:内网GPT",
+        configSource: "studio",
+        baseUrl: "https://llm.internal.corp/v1",
+        model: "claude-sonnet-4-6",
+        apiFormat: "chat",
+        stream: true,
+        services: [
+          { service: "custom", name: "内网GPT", baseUrl: "https://llm.internal.corp/v1", apiFormat: "chat", stream: true },
+        ],
+        defaultModel: "claude-sonnet-4-6",
+      },
+    }, null, 2), "utf-8");
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const save = await app.request("http://localhost/api/v1/services/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        services: {
+          "custom:内网GPT": {
+            apiFormat: "anthropic",
+          },
+        },
+      }),
+    });
+    expect(save.status).toBe(200);
+
+    const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
+    expect(raw.llm.services[0]?.apiFormat).toBe("anthropic");
+    expect(raw.llm.apiFormat).toBe("anthropic");
+    expect(raw.llm.provider).toBe("anthropic");
+    expect(raw.llm.services[0]).not.toHaveProperty("api");
+    expect(raw.llm).not.toHaveProperty("api");
+
+    const list = await app.request("http://localhost/api/v1/services/config");
+    expect(list.status).toBe(200);
+    const listed = await list.json() as { services: Array<{ service: string; name?: string; apiFormat?: string }> };
+    const saved = listed.services.find((entry) => entry.service === "custom" && entry.name === "内网GPT");
+    expect(saved?.apiFormat).toBe("anthropic");
+  });
+
+  it("keeps openai provider mirror for custom chat and responses api formats", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        provider: "openai",
+        service: "custom:内网GPT",
+        configSource: "studio",
+        baseUrl: "https://llm.internal.corp/v1",
+        model: "gpt-5.4",
+        apiFormat: "chat",
+        stream: true,
+        services: [
+          { service: "custom", name: "内网GPT", baseUrl: "https://llm.internal.corp/v1", apiFormat: "chat", stream: true },
+        ],
+        defaultModel: "gpt-5.4",
+      },
+    }, null, 2), "utf-8");
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const saveChat = await app.request("http://localhost/api/v1/services/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        services: { "custom:内网GPT": { apiFormat: "chat" } },
+      }),
+    });
+    expect(saveChat.status).toBe(200);
+    const afterChat = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
+    expect(afterChat.llm.apiFormat).toBe("chat");
+    expect(afterChat.llm.provider).toBe("openai");
+
+    const saveResponses = await app.request("http://localhost/api/v1/services/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        services: { "custom:内网GPT": { apiFormat: "responses" } },
+      }),
+    });
+    expect(saveResponses.status).toBe(200);
+    const afterResponses = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
+    expect(afterResponses.llm.apiFormat).toBe("responses");
+    expect(afterResponses.llm.provider).toBe("openai");
+  });
+
   it("deletes a custom service config and stored secret", async () => {
     await writeFile(join(root, "inkos.json"), JSON.stringify({
       ...projectConfig,
@@ -1812,6 +1907,84 @@ describe("createStudioServer daemon lifecycle", () => {
       ok: false,
       error: expect.stringContaining("Could not determine a model automatically"),
     });
+  });
+
+  it("probes custom+anthropic only within the Anthropic family and labels it Anthropic Messages", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        service: "custom:AnthropicGW",
+        defaultModel: "claude-sonnet-4-6",
+        services: [
+          { service: "custom", name: "AnthropicGW", baseUrl: "https://gateway.example", apiFormat: "anthropic", stream: false },
+        ],
+      },
+    }, null, 2), "utf-8");
+
+    createLLMClientMock.mockImplementation(((cfg: unknown) => cfg) as never);
+    chatCompletionMock.mockImplementation(async (client: { apiFormat?: string; provider?: string; stream?: boolean }) => {
+      if (client.apiFormat === "anthropic") {
+        return { content: "pong", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      }
+      throw new Error("unexpected transport in probe");
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: async () => "404 page not found",
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/services/custom%3AAnthropicGW/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: "sk-gw",
+        baseUrl: "https://gateway.example",
+        apiFormat: "anthropic",
+        stream: false,
+      }),
+    });
+
+    const body = await response.json() as {
+      ok: boolean;
+      detected: { apiFormat?: string; stream?: boolean };
+    };
+    if (!body.ok) {
+      throw new Error(`probe failed: ${JSON.stringify(body).slice(0, 600)}; fetchUrls=${JSON.stringify(fetchMock.mock.calls.map((c) => String(c[0])))}`);
+    }
+    expect(response.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.detected.apiFormat).toBe("anthropic");
+    expect(body.detected.stream).toBe(false);
+    expect(body.detected?.apiFormat).toBe("anthropic");
+
+    const probeClients = createLLMClientMock.mock.calls.map((call: unknown[]) => call[0]) as Array<{ apiFormat?: string }>;
+    expect(probeClients.length).toBeGreaterThan(0);
+    for (const client of probeClients) {
+      expect(client.apiFormat).toBe("anthropic");
+    }
+
+    chatCompletionMock.mockReset();
+    chatCompletionMock.mockRejectedValue(new Error("anthropic downstream down"));
+    const failing = await app.request("http://localhost/api/v1/services/custom%3AAnthropicGW/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: "sk-gw",
+        baseUrl: "https://gateway.example",
+        apiFormat: "anthropic",
+        stream: false,
+      }),
+    });
+    expect(failing.status).toBe(400);
+    const failedBody = await failing.json() as { error?: string };
+    expect(failedBody.error).toContain("Anthropic Messages");
+
+    vi.unstubAllGlobals();
   });
 
   it("returns an English empty-API-key error when the project language is en", async () => {

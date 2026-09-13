@@ -343,10 +343,10 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
             <span className="text-xs text-emerald-500">
               {tr(`连接成功，${models.length} 个模型`, `Connected, ${models.length} models`)}
               {detectedModel
-                ? tr(
-                    `，已自动匹配 ${detectedModel}${detectedConfig ? ` / ${detectedConfig.apiFormat === "responses" ? "Responses" : "Chat"} / ${detectedConfig.stream ? "流式" : "非流式"}` : ""}`,
-                    `, auto-matched ${detectedModel}${detectedConfig ? ` / ${detectedConfig.apiFormat === "responses" ? "Responses" : "Chat"} / ${detectedConfig.stream ? "streaming" : "non-streaming"}` : ""}`,
-                  )
+                    ? tr(
+                        `，已自动匹配 ${detectedModel}${detectedConfig ? ` / ${detectedConfig.apiFormat === "responses" ? "Responses" : detectedConfig.apiFormat === "anthropic" ? "Anthropic Messages" : "Chat"} / ${detectedConfig.stream ? "流式" : "非流式"}` : ""}`,
+                        `, auto-matched ${detectedModel}${detectedConfig ? ` / ${detectedConfig.apiFormat === "responses" ? "Responses" : detectedConfig.apiFormat === "anthropic" ? "Anthropic Messages" : "Chat"} / ${detectedConfig.stream ? "streaming" : "non-streaming"}` : ""}`,
+                      )
                 : ""}
             </span>
           )}
@@ -370,6 +370,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
             >
               <option value="chat">Chat / Completions</option>
               <option value="responses">Responses</option>
+              <option value="anthropic">Anthropic Messages</option>
             </select>
           </Field>
 

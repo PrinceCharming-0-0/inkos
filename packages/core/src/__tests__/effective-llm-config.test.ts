@@ -319,6 +319,32 @@ describe("resolveEffectiveLLMConfig", () => {
     expect(result.diagnostics.modelSource).toBe("cli");
   });
 
+  it("custom+anthropic apiFormat 经 effective config round-trip 后保持 anthropic", async () => {
+    await writeProject({
+      configSource: "studio",
+      service: "custom:内网GPT",
+      services: [{
+        service: "custom",
+        name: "内网GPT",
+        baseUrl: "https://llm.internal.corp",
+        apiFormat: "anthropic",
+        stream: true,
+        models: ["claude-sonnet-4-5"],
+      }],
+      defaultModel: "claude-sonnet-4-5",
+    });
+    await writeSecrets({ "custom:内网GPT": { apiKey: "sk-corp" } });
+
+    const result = await resolveEffectiveLLMConfig({
+      consumer: "studio",
+      projectRoot: root,
+      envLayers: { global: {}, project: {}, process: {} },
+    });
+
+    expect(result.llm.apiFormat).toBe("anthropic");
+    expect(result.llm.baseUrl).toBe("https://llm.internal.corp");
+  });
+
   it("CLI 指定 service 时不会继承旧 env 的 baseUrl/model/apiKey", async () => {
     await writeProject({
       configSource: "studio",

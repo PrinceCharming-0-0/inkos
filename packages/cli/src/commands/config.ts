@@ -98,7 +98,7 @@ configCommand
   .option("--temperature <n>", "Temperature")
   .option("--max-tokens <n>", "Max output tokens")
   .option("--thinking-budget <n>", "Anthropic thinking budget")
-  .option("--api-format <format>", "API format (chat / responses)")
+  .option("--api-format <format>", "API format (chat / responses / anthropic)")
   .option("--lang <language>", "Default writing language: zh (Chinese) or en (English)")
   .action(async (opts) => {
     try {

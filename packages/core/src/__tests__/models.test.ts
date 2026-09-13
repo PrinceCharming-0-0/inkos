@@ -456,6 +456,40 @@ describe("LLMConfigSchema", () => {
   });
 });
 
+describe("LLMConfigSchema apiFormat (anthropic-messages phase 2)", () => {
+  function minimalLLM(apiFormat?: unknown) {
+    const base: Record<string, unknown> = {
+      provider: "custom",
+      service: "custom",
+      configSource: "studio",
+      baseUrl: "https://gateway.example",
+      apiKey: "key",
+      model: "claude-sonnet-4-6",
+    };
+    if (apiFormat !== undefined) base.apiFormat = apiFormat;
+    return base;
+  }
+
+  it("accepts apiFormat=anthropic", () => {
+    const result = LLMConfigSchema.parse(minimalLLM("anthropic"));
+    expect(result.apiFormat).toBe("anthropic");
+  });
+
+  it("accepts apiFormat=chat and apiFormat=responses", () => {
+    expect(LLMConfigSchema.parse(minimalLLM("chat")).apiFormat).toBe("chat");
+    expect(LLMConfigSchema.parse(minimalLLM("responses")).apiFormat).toBe("responses");
+  });
+
+  it("defaults missing apiFormat to chat", () => {
+    expect(LLMConfigSchema.parse(minimalLLM()).apiFormat).toBe("chat");
+  });
+
+  it("rejects invalid apiFormat values", () => {
+    expect(() => LLMConfigSchema.parse(minimalLLM("anthropic-chat"))).toThrow();
+    expect(() => LLMConfigSchema.parse(minimalLLM(123))).toThrow();
+  });
+});
+
 describe("NotifyChannelSchema", () => {
   it("accepts telegram channel", () => {
     const result = NotifyChannelSchema.parse({

@@ -5,6 +5,18 @@ import { BaseAgent, type AgentContext } from "../agents/base.js";
 
 const chatCompletionMock = vi.hoisted(() => vi.fn());
 const guardedPiStreamMock = vi.hoisted(() => vi.fn());
+const agentInitialStates = vi.hoisted(() => [] as Array<{ api?: string; provider?: string }>);
+
+vi.mock("@mariozechner/pi-agent-core", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@mariozechner/pi-agent-core")>();
+  class RecordingAgent extends original.Agent {
+    constructor(options: ConstructorParameters<typeof original.Agent>[0]) {
+      agentInitialStates.push({ api: options?.initialState?.model?.api, provider: options?.initialState?.model?.provider });
+      super(options);
+    }
+  }
+  return { ...original, Agent: RecordingAgent };
+});
 
 vi.mock("../llm/provider.js", () => ({
   chatCompletion: chatCompletionMock,
@@ -55,6 +67,34 @@ describe("Pi worker harness", () => {
   beforeEach(() => {
     chatCompletionMock.mockReset();
     guardedPiStreamMock.mockReset();
+    agentInitialStates.length = 0;
+  });
+
+  it("maps a client without a resolved Pi model to the api implied by apiFormat", async () => {
+    chatCompletionMock.mockResolvedValue({ content: "完成" });
+    const anthropicClient = { ...client(), apiFormat: "anthropic" as const, provider: "anthropic" as const };
+    delete (anthropicClient as { _piModel?: unknown })._piModel;
+
+    await runWorkerAgent(anthropicClient, "claude-sonnet-4-5", [
+      { role: "user", content: "写作" },
+    ]);
+
+    const recorded = agentInitialStates.at(-1);
+    expect(recorded?.api).toBe("anthropic-messages");
+    expect(recorded?.provider).toBe("anthropic");
+  });
+
+  it("keeps chat clients mapping to the openai completions api", async () => {
+    chatCompletionMock.mockResolvedValue({ content: "完成" });
+    const chatClient = { ...client(), apiFormat: "chat" as const };
+    delete (chatClient as { _piModel?: unknown })._piModel;
+
+    await runWorkerAgent(chatClient, "gpt-5.4", [
+      { role: "user", content: "写作" },
+    ]);
+
+    const recorded = agentInitialStates.at(-1);
+    expect(recorded?.api).toBe("openai-completions");
   });
 
   afterEach(() => {

@@ -14,6 +14,7 @@ import {
   activatedSkillIds,
   createLLMClient,
   loadAvailableAgentSkills,
+  normalizeApiFormat,
   resolveProductionSkillActivations,
   runShortFictionProduction,
   type LLMConfig,
@@ -241,7 +242,7 @@ async function createShortRuntime(
   }
 }
 
-function buildEnvLLMConfig(options: {
+export function buildEnvLLMConfig(options: {
   readonly llmBaseUrl?: string;
   readonly model?: string;
 }): LLMConfig {
@@ -258,7 +259,7 @@ function buildEnvLLMConfig(options: {
     model,
     temperature: parseEnvNumber(process.env.INKOS_LLM_TEMPERATURE, 0.1),
     thinkingBudget: parseEnvInteger(process.env.INKOS_LLM_THINKING_BUDGET, 0),
-    apiFormat: process.env.INKOS_LLM_API_FORMAT === "responses" ? "responses" : "chat",
+    apiFormat: normalizeApiFormat(process.env.INKOS_LLM_API_FORMAT) ?? "chat",
     stream: process.env.INKOS_LLM_STREAM === "false" ? false : true,
   };
 }

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildDoctorModelCandidates, resolveDoctorModelsBaseUrl } from "../commands/doctor.js";
+import {
+  buildDoctorModelCandidates,
+  buildDoctorProbePlans,
+  resolveDoctorModelsBaseUrl,
+} from "../commands/doctor.js";
 
 describe("doctor model candidate probing", () => {
   it("keeps the configured model first, then tries discovered models without duplicates", () => {
@@ -33,4 +37,29 @@ describe("doctor model candidate probing", () => {
     expect(modelsBaseUrl).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1");
   });
 
+});
+
+describe("buildDoctorProbePlans", () => {
+  it("keeps anthropic probes inside the Anthropic family without cross-protocol fallback", () => {
+    const plans = buildDoctorProbePlans("anthropic", true);
+    expect(plans).toEqual([
+      { apiFormat: "anthropic", stream: true },
+      { apiFormat: "anthropic", stream: false },
+    ]);
+  });
+
+  it("keeps chat and responses alternate plans for openai-compatible services", () => {
+    expect(buildDoctorProbePlans("chat", true)).toEqual([
+      { apiFormat: "chat", stream: true },
+      { apiFormat: "chat", stream: false },
+      { apiFormat: "responses", stream: false },
+      { apiFormat: "responses", stream: true },
+    ]);
+    expect(buildDoctorProbePlans(undefined, undefined)).toEqual([
+      { apiFormat: "responses", stream: false },
+      { apiFormat: "responses", stream: true },
+      { apiFormat: "chat", stream: false },
+      { apiFormat: "chat", stream: true },
+    ]);
+  });
 });

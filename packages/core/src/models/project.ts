@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const API_FORMATS = ["chat", "responses"] as const;
+export const API_FORMATS = ["chat", "responses", "anthropic"] as const;
 export type ApiFormat = (typeof API_FORMATS)[number];
 
 export function normalizeApiFormat(value: unknown): ApiFormat | undefined {

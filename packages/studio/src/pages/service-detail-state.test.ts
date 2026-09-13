@@ -87,6 +87,44 @@ describe("saveServiceConfig", () => {
     });
   });
 
+  it("round-trips an anthropic api format selection through save without changing protocol", async () => {
+    const calls: string[] = [];
+    const bodies: unknown[] = [];
+    const fetchJsonImpl = vi.fn(async (path: string, init?: { body?: string }) => {
+      calls.push(path);
+      if (init?.body) bodies.push(JSON.parse(init.body));
+      if (path === "/services/custom%3AAnthropicGW/test") {
+        return {
+          ok: true,
+          models: [{ id: "claude-sonnet-4-5" }],
+          selectedModel: "claude-sonnet-4-5",
+          detected: { apiFormat: "anthropic", stream: false, baseUrl: "https://llm.internal.corp" },
+        };
+      }
+      if (path === "/services/custom%3AAnthropicGW/secret") return { ok: true };
+      if (path === "/services/config") return { ok: true };
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    const result = await saveServiceConfig({
+      effectiveServiceId: "custom:AnthropicGW",
+      serviceId: "custom",
+      isCustom: true,
+      resolvedCustomName: "AnthropicGW",
+      apiKey: "",
+      baseUrl: "https://llm.internal.corp",
+      apiFormat: "anthropic",
+      stream: true,
+      temperature: "0.7",
+      detectedModel: "",
+      fetchJsonImpl: fetchJsonImpl as never,
+    });
+
+    expect(result.detectedConfig?.apiFormat).toBe("anthropic");
+    const savedConfig = bodies[2] as { services: Array<{ apiFormat?: string }> };
+    expect(savedConfig.services[0]?.apiFormat).toBe("anthropic");
+  });
+
   it("allows a built-in local service to validate and save without an API key", async () => {
     const calls: string[] = [];
     const fetchJsonImpl = vi.fn(async (path: string) => {

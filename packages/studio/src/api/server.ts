@@ -1878,7 +1878,9 @@ function syncTopLevelLlmMirror(llm: Record<string, unknown>): void {
   if (!selectedEntry) return;
 
   const preset = resolveServicePreset(selectedEntry.service);
-  llm.provider = resolveServiceProviderFamily(selectedEntry.service) ?? "openai";
+  llm.provider = selectedEntry.service === "custom" && selectedEntry.apiFormat === "anthropic"
+    ? "anthropic"
+    : resolveServiceProviderFamily(selectedEntry.service) ?? "openai";
   llm.baseUrl = selectedEntry.baseUrl ?? preset?.baseUrl ?? "";
 
   const defaultModel = typeof llm.defaultModel === "string" ? llm.defaultModel.trim() : "";
@@ -2248,7 +2250,11 @@ function formatServiceProbeError(args: {
   const upstreamDetail = rawDetail.includes("上游详情：")
     ? rawDetail
     : "";
-  const protocol = args.apiFormat === "responses" ? "Responses" : "Chat / Completions";
+  const protocol = args.apiFormat === "responses"
+    ? "Responses"
+    : args.apiFormat === "anthropic"
+      ? "Anthropic Messages"
+      : "Chat / Completions";
   const streamSuffix = typeof args.stream === "boolean"
     ? pick(lang, `，${args.stream ? "流式" : "非流式"}`, `, ${args.stream ? "streaming" : "non-streaming"}`)
     : "";

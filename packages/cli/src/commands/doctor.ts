@@ -18,7 +18,7 @@ import {
   resolveCliLanguage,
 } from "../localization.js";
 
-function buildDoctorProbePlans(
+export function buildDoctorProbePlans(
   preferredApiFormat: ApiFormat | undefined,
   preferredStream: boolean | undefined,
 ): Array<{ apiFormat: ApiFormat; stream: boolean }> {
@@ -34,6 +34,9 @@ function buildDoctorProbePlans(
   if (preferredApiFormat) {
     push(preferredApiFormat, preferredStream ?? false);
     push(preferredApiFormat, !(preferredStream ?? false));
+  }
+  if (preferredApiFormat === "anthropic") {
+    return plans;
   }
   const alternate = preferredApiFormat === "responses" ? "chat" : "responses";
   push(alternate, false);

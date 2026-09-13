@@ -49,10 +49,23 @@ function workerModel(client: LLMClient, modelId: string, maxTokens?: number): Mo
   // Test doubles and embedders may provide only the public LLMClient surface.
   // The actual transport still runs through chatCompletion; this model is Pi
   // lifecycle metadata rather than a second provider configuration.
+  const fallbackApi = ((): Api => {
+    switch (client.apiFormat) {
+      case "responses":
+        return "openai-responses";
+      case "anthropic":
+        return "anthropic-messages";
+      case "chat":
+        return "openai-completions";
+      default:
+        client.apiFormat satisfies never;
+        return "openai-completions";
+    }
+  })();
   return {
     id: modelId,
     name: modelId,
-    api: (client.apiFormat === "responses" ? "openai-responses" : "openai-completions") as Api,
+    api: fallbackApi,
     provider: client.provider as Provider,
     baseUrl: "",
     reasoning: false,

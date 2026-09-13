@@ -6,6 +6,7 @@ import {
   type LLMClient,
 } from "../llm/provider.js";
 import { runWithAgentTrajectory } from "../llm/agent-trajectory.js";
+import type { ApiFormat } from "../models/project.js";
 
 // ── Mock @mariozechner/pi-ai ──────────────────────────────────────────────────
 // We intercept streamSimple so tests don't hit the network.
@@ -1151,6 +1152,114 @@ describe("createLLMClient with providers lookup", () => {
     expect(client._piModel?.provider).toBe("google");
     expect(client._piModel?.baseUrl).toBe("https://generativelanguage.googleapis.com/v1beta");
     expect(client._piModel?.compat).toBeUndefined();
+  });
+});
+
+describe("createLLMClient custom anthropic apiFormat routes to Anthropic Messages transport", () => {
+  beforeEach(() => {
+    mockStreamSimple.mockReset();
+    mockCompleteSimple.mockReset();
+    mockComplete.mockReset();
+  });
+
+  function makeFetchMock(json: unknown) {
+    return vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => json,
+    });
+  }
+
+  function recordedCalls(fetchMock: ReturnType<typeof vi.fn>) {
+    return fetchMock.mock.calls.map((call: unknown[]) => {
+      const url = String(call[0]);
+      const init = (call[1] ?? {}) as { headers?: Record<string, string> };
+      return { url, headers: init.headers ?? {} };
+    });
+  }
+
+  const anthropicJson = {
+    content: [{ type: "text", text: "anthropic ok" }],
+    usage: { input_tokens: 5, output_tokens: 3 },
+  };
+  const chatJson = {
+    choices: [{ message: { content: "chat ok" } }],
+    usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+  };
+  const responsesJson = {
+    output: [{ content: [{ text: "responses ok" }] }],
+    usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+  };
+
+  function makeConfig(apiFormat: ApiFormat) {
+    return {
+      provider: "custom",
+      service: "custom",
+      configSource: "studio",
+      baseUrl: "https://gateway.example",
+      apiKey: "sk-test",
+      model: "test-model",
+      apiFormat,
+      stream: false,
+    };
+  }
+
+  it("routes custom+anthropic through /messages with anthropic headers and provider=anthropic", async () => {
+    const { createLLMClient } = await import("../llm/provider.js");
+    const { LLMConfigSchema } = await import("../models/project.js");
+    const fetchMock = makeFetchMock(anthropicJson);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createLLMClient(LLMConfigSchema.parse(makeConfig("anthropic")));
+    expect(client.provider).toBe("anthropic");
+    expect(client.apiFormat).toBe("anthropic");
+    expect(client._piModel?.api).toBe("anthropic-messages");
+
+    const result = await chatCompletion(client, "test-model", [{ role: "user", content: "nihao" }]);
+    expect(result.content).toBe("anthropic ok");
+
+    const calls = recordedCalls(fetchMock);
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.url).toMatch(/\/messages$/);
+    expect(calls[0]?.headers).toHaveProperty("anthropic-version");
+    const allUrls = calls.map((c) => c.url).join(" ");
+    expect(allUrls).not.toContain("/chat/completions");
+    expect(allUrls).not.toContain("/responses");
+    expect(mockStreamSimple).not.toHaveBeenCalled();
+    expect(mockCompleteSimple).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps custom+chat on /chat/completions", async () => {
+    const { createLLMClient } = await import("../llm/provider.js");
+    const { LLMConfigSchema } = await import("../models/project.js");
+    const fetchMock = makeFetchMock(chatJson);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createLLMClient(LLMConfigSchema.parse(makeConfig("chat")));
+    const result = await chatCompletion(client, "test-model", [{ role: "user", content: "nihao" }]);
+    expect(result.content).toBe("chat ok");
+
+    const calls = recordedCalls(fetchMock);
+    expect(calls[0]?.url).toMatch(/\/chat\/completions$/);
+    expect(calls[0]?.headers).not.toHaveProperty("anthropic-version");
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps custom+responses on /responses", async () => {
+    const { createLLMClient } = await import("../llm/provider.js");
+    const { LLMConfigSchema } = await import("../models/project.js");
+    const fetchMock = makeFetchMock(responsesJson);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createLLMClient(LLMConfigSchema.parse(makeConfig("responses")));
+    const result = await chatCompletion(client, "test-model", [{ role: "user", content: "nihao" }]);
+    expect(result.content).toBe("responses ok");
+
+    const calls = recordedCalls(fetchMock);
+    expect(calls[0]?.url).toMatch(/\/responses$/);
+    expect(calls[0]?.headers).not.toHaveProperty("anthropic-version");
+    vi.unstubAllGlobals();
   });
 });
 
