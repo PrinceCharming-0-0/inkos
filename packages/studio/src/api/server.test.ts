@@ -1603,6 +1603,91 @@ describe("createStudioServer daemon lifecycle", () => {
     });
   });
 
+  it("clears stale top-level llm mirror when deleting the selected custom anthropic service", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        provider: "anthropic",
+        service: "custom:AnthropicGW",
+        configSource: "studio",
+        baseUrl: "https://gw.internal.corp/anthropic",
+        model: "claude-sonnet-4-6",
+        apiFormat: "anthropic",
+        stream: true,
+        services: [
+          { service: "custom", name: "AnthropicGW", baseUrl: "https://gw.internal.corp/anthropic", apiFormat: "anthropic", stream: true },
+        ],
+        defaultModel: "claude-sonnet-4-6",
+      },
+    }, null, 2), "utf-8");
+    loadSecretsMock.mockResolvedValue({
+      services: { "custom:AnthropicGW": { apiKey: "sk-gw" } },
+    });
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/services/custom%3AAnthropicGW", {
+      method: "DELETE",
+    });
+
+    expect(response.status).toBe(200);
+    const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
+    expect(raw.llm.services).toEqual([]);
+    expect(raw.llm.service).toBeUndefined();
+    expect(raw.llm.defaultModel).toBeUndefined();
+    // The deleted service's protocol truth must not leak into the top-level mirror.
+    expect(raw.llm.provider).not.toBe("anthropic");
+    expect(raw.llm.apiFormat).not.toBe("anthropic");
+    expect(raw.llm.baseUrl).not.toBe("https://gw.internal.corp/anthropic");
+    expect(raw.llm.model).not.toBe("claude-sonnet-4-6");
+  });
+
+  it("keeps the current selection mirror intact when deleting a non-selected service", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        provider: "openai",
+        service: "moonshot",
+        configSource: "studio",
+        baseUrl: "https://api.moonshot.cn/v1",
+        model: "kimi-k2.5",
+        apiFormat: "chat",
+        stream: true,
+        services: [
+          { service: "moonshot", temperature: 1, apiFormat: "chat", stream: true },
+          { service: "custom", name: "AnthropicGW", baseUrl: "https://gw.internal.corp/anthropic", apiFormat: "anthropic", stream: true },
+        ],
+        defaultModel: "kimi-k2.5",
+      },
+    }, null, 2), "utf-8");
+    loadSecretsMock.mockResolvedValue({
+      services: {
+        moonshot: { apiKey: "sk-moon" },
+        "custom:AnthropicGW": { apiKey: "sk-gw" },
+      },
+    });
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/services/custom%3AAnthropicGW", {
+      method: "DELETE",
+    });
+
+    expect(response.status).toBe(200);
+    const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
+    expect(raw.llm.services).toEqual([
+      { service: "moonshot", temperature: 1, apiFormat: "chat", stream: true },
+    ]);
+    // Deleting an unrelated service must not disturb the active selection or its mirror.
+    expect(raw.llm.service).toBe("moonshot");
+    expect(raw.llm.defaultModel).toBe("kimi-k2.5");
+    expect(raw.llm.provider).toBe("openai");
+    expect(raw.llm.baseUrl).toBe("https://api.moonshot.cn/v1");
+    expect(raw.llm.apiFormat).toBe("chat");
+  });
+
   it("reports config source and detected env overrides for Studio switching", async () => {
     await writeFile(join(root, ".env"), [
       "INKOS_LLM_PROVIDER=openai",

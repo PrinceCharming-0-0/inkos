@@ -3755,6 +3755,13 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     if (nextLlm.service === service) {
       delete nextLlm.service;
       delete nextLlm.defaultModel;
+      // These top-level fields only mirror the selected service entry; with the
+      // selection gone they would otherwise retain the deleted service's protocol
+      // truth (provider/baseUrl/apiFormat) and mislead downstream resolution.
+      delete nextLlm.provider;
+      delete nextLlm.baseUrl;
+      delete nextLlm.apiFormat;
+      delete nextLlm.model;
     }
     await saveRawConfig(root, config);
 
