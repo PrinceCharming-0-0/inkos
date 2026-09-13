@@ -3616,7 +3616,24 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     if (body.services !== undefined) {
       const existingServices = normalizeServiceConfig(llm.services);
       const incomingServices = normalizeServiceConfig(body.services);
-      llm.services = mergeServiceConfig(existingServices, incomingServices);
+
+      // Handle service rename: if the selected service is changing and it's a custom service rename,
+      // remove the old entry to avoid duplication
+      const oldSelectedService = typeof llm.service === "string" ? llm.service : undefined;
+      const newSelectedService = body.service ?? oldSelectedService;
+
+      let merged = mergeServiceConfig(existingServices, incomingServices);
+
+      // If changing from one custom service to another, remove the old one
+      if (
+        oldSelectedService && newSelectedService && oldSelectedService !== newSelectedService &&
+        oldSelectedService.startsWith("custom:") && newSelectedService.startsWith("custom:")
+      ) {
+        const oldName = oldSelectedService.slice("custom:".length);
+        merged = merged.filter((entry) => !(entry.service === "custom" && entry.name === oldName));
+      }
+
+      llm.services = merged;
     }
     if (body.defaultModel !== undefined) {
       llm.defaultModel = body.defaultModel;
