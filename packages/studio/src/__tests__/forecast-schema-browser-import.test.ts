@@ -6,4 +6,12 @@ describe("browser-safe core imports", () => {
 
     expect(forecastSchema.NarrativeForecastSchema).toBeDefined();
   });
+
+  it("loads the project model without the Node-heavy core root", async () => {
+    const project = await import("@actalk/inkos-core/models/project");
+
+    expect(project.API_FORMATS).toEqual(["chat", "responses", "anthropic"]);
+    expect(project.normalizeApiFormat("anthropic")).toBe("anthropic");
+    expect(project.normalizeApiFormat("nope")).toBeUndefined();
+  });
 });

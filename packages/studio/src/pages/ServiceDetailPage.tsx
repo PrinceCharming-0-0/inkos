@@ -4,7 +4,7 @@ import { useServiceStore } from "../store/service";
 import { Eye, EyeOff, Loader2, ArrowLeft, Plus, Trash2, X } from "lucide-react";
 import { ServiceQuickLinks } from "../components/ServiceQuickLinks";
 import { tr } from "../lib/app-language";
-import { normalizeApiFormat, type ApiFormat } from "@actalk/inkos-core";
+import { normalizeApiFormat, type ApiFormat } from "@actalk/inkos-core/models/project";
 import {
   deleteServiceConfig,
   matchServiceConfigEntryForDetail,

@@ -36,6 +36,10 @@
     "./forecast/schema": {
       "types": "./dist/forecast/schema.d.ts",
       "import": "./dist/forecast/schema.js"
+    },
+    "./models/project": {
+      "types": "./dist/models/project.d.ts",
+      "import": "./dist/models/project.js"
     }
   },
   "files": [
