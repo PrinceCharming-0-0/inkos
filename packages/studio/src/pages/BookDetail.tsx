@@ -53,6 +53,7 @@ interface BookData {
 
 type ReviseMode = "spot-fix" | "polish" | "rewrite" | "rework" | "anti-detect";
 type ExportFormat = "txt" | "md" | "epub";
+type ExportPackaging = "single" | "chapters";
 type BookStatus = "active" | "paused" | "outlining" | "completed" | "dropped";
 
 interface Nav {
@@ -109,6 +110,7 @@ export function BookDetail({
   const [settingsTargetChapters, setSettingsTargetChapters] = useState<number | null>(null);
   const [settingsStatus, setSettingsStatus] = useState<BookStatus | null>(null);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("txt");
+  const [exportPackaging, setExportPackaging] = useState<ExportPackaging>("single");
   const [exportApprovedOnly, setExportApprovedOnly] = useState(false);
   const [bookActionPending, setBookActionPending] = useState<string | null>(null);
   // Auto (pipeline self-reviews) vs manual (write the draft and stop; you
@@ -434,7 +436,8 @@ export function BookDetail({
   const currentTargetChapters = settingsTargetChapters ?? book.targetChapters ?? 0;
   const currentStatus = settingsStatus ?? (book.status as BookStatus);
 
-  const exportHref = `/api/v1/books/${bookId}/export?format=${exportFormat}${exportApprovedOnly ? "&approvedOnly=true" : ""}`;
+  const packagingDisabled = exportFormat === "epub";
+  const exportHref = `/api/v1/books/${bookId}/export?format=${exportFormat}${exportApprovedOnly ? "&approvedOnly=true" : ""}${packagingDisabled ? "" : `&packaging=${exportPackaging}`}`;
 
   return (
     <div className="space-y-8 fade-in">
@@ -605,12 +608,28 @@ export function BookDetail({
           <div className="flex items-center gap-2">
             <select
               value={exportFormat}
-              onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
+              onChange={(e) => {
+                const fmt = e.target.value as ExportFormat;
+                setExportFormat(fmt);
+                if (fmt === "epub" && exportPackaging === "chapters") {
+                  setExportPackaging("single");
+                }
+              }}
               className="px-2 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg border border-border/50 outline-none"
             >
               <option value="txt">TXT</option>
-              <option value="md">MD</option>
+              <option value="md">Markdown</option>
               <option value="epub">EPUB</option>
+            </select>
+            <select
+              value={exportPackaging}
+              onChange={(e) => setExportPackaging(e.target.value as ExportPackaging)}
+              disabled={packagingDisabled}
+              className="px-2 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg border border-border/50 outline-none disabled:opacity-40"
+              title={packagingDisabled ? "EPUB only supports single-file packaging" : ""}
+            >
+              <option value="single">{data?.book.language === "en" ? "Single file" : "单文件"}</option>
+              <option value="chapters">{data?.book.language === "en" ? "Chapters (ZIP)" : "分章节 (ZIP)"}</option>
             </select>
             <label className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground cursor-pointer select-none">
               <input
@@ -621,24 +640,14 @@ export function BookDetail({
               />
               {t("book.approvedOnly")}
             </label>
-            <button
-              onClick={async () => {
-                try {
-                  const data = await fetchJson<{ path?: string; chapters?: number }>(`/books/${bookId}/export-save`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ format: exportFormat, approvedOnly: exportApprovedOnly }),
-                  });
-                  alert(`${t("common.exportSuccess")}\n${data.path}\n(${data.chapters} ${t("dash.chapters")})`);
-                } catch (e) {
-                  alert(e instanceof Error ? e.message : "Export failed");
-                }
-              }}
-              className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50"
+            <a
+              href={exportHref}
+              download
+              className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-secondary/50 text-muted-foreground rounded-lg hover:text-foreground hover:bg-secondary transition-all border border-border/50 no-underline"
             >
               <Download size={14} />
               {t("book.export")}
-            </button>
+            </a>
           </div>
       </div>
 

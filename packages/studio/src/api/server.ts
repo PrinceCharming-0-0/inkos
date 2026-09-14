@@ -40,6 +40,7 @@ import {
   chatCompletion,
   runWorkerAgent,
   buildExportArtifact,
+  type ExportPackaging,
   evaluateBookQuality,
   ConsolidatorAgent,
   DetectionConfigSchema,
@@ -5431,11 +5432,13 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const id = c.req.param("id");
     const format = (c.req.query("format") ?? "txt") as string;
     const approvedOnly = c.req.query("approvedOnly") === "true";
+    const packaging = (c.req.query("packaging") ?? "single") as string;
 
     try {
       const artifact = await buildExportArtifact(state, id, {
         format: format as "txt" | "md" | "epub",
         approvedOnly,
+        packaging: packaging as "single" | "chapters",
       });
       const responseBody = typeof artifact.payload === "string"
         ? artifact.payload
