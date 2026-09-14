@@ -1,6 +1,9 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { EPub } from "epub-gen-memory";
+import JSZip from "jszip";
+
+export type ExportPackaging = "single" | "chapters";
 
 export interface ExportStateLike {
   readonly bookDir: (bookId: string) => string;
@@ -20,6 +23,7 @@ export interface ExportArtifact {
   readonly format: "txt" | "md" | "epub";
   readonly contentType: string;
   readonly payload: string | Buffer;
+  readonly packaging?: ExportPackaging;
 }
 
 function buildChapterFileLookup(files: ReadonlyArray<string>): ReadonlyMap<number, string> {
@@ -55,6 +59,51 @@ function markdownToSimpleHtml(markdown: string): { title: string; html: string }
   return { title, html };
 }
 
+async function buildChaptersZipArtifact(
+  state: ExportStateLike,
+  bookId: string,
+  book: { readonly title: string; readonly language?: string },
+  chapters: ReadonlyArray<{ readonly number: number; readonly status: string; readonly wordCount: number }>,
+  chapterFiles: ReadonlyMap<number, string>,
+  chaptersDir: string,
+  format: "txt" | "md",
+  approvedOnly: boolean,
+  totalWords: number,
+): Promise<{ readonly payload: Buffer; readonly chaptersExported: number }> {
+  const zip = new JSZip();
+  const manifest: Array<{ number: number; fileName: string; wordCount: number }> = [];
+
+  for (const chapter of chapters) {
+    const match = chapterFiles.get(chapter.number);
+    if (!match) continue;
+
+    const markdown = await readFile(join(chaptersDir, match), "utf-8");
+    const fileName = format === "md"
+      ? `${String(chapter.number).padStart(4, "0")}.md`
+      : `${String(chapter.number).padStart(4, "0")}.txt`;
+
+    zip.file(fileName, markdown);
+    manifest.push({ number: chapter.number, fileName, wordCount: chapter.wordCount });
+  }
+
+  zip.file("book.json", JSON.stringify({
+    title: book.title,
+    language: book.language,
+    format,
+    packaging: "chapters",
+    approvedOnly,
+    chaptersExported: manifest.length,
+    totalWords,
+    exportedAt: new Date().toISOString(),
+    chapters: manifest,
+  }, null, 2));
+
+  return {
+    payload: await zip.generateAsync({ type: "nodebuffer" }),
+    chaptersExported: manifest.length,
+  };
+}
+
 export async function buildExportArtifact(
   state: ExportStateLike,
   bookId: string,
@@ -62,9 +111,16 @@ export async function buildExportArtifact(
     readonly format?: "txt" | "md" | "epub";
     readonly approvedOnly?: boolean;
     readonly outputPath?: string;
+    readonly packaging?: ExportPackaging;
   },
 ): Promise<ExportArtifact> {
   const format = options.format ?? "txt";
+  const packaging = options.packaging ?? "single";
+
+  if (packaging === "chapters" && format === "epub") {
+    throw new Error("EPUB export only supports single-file packaging.");
+  }
+
   const index = await state.loadChapterIndex(bookId);
   const book = await state.loadBookConfig(bookId);
   const chapters = options.approvedOnly
@@ -105,6 +161,31 @@ export async function buildExportArtifact(
       format,
       contentType: "application/epub+zip",
       payload: await epubInstance.genEpub(),
+      packaging: "single",
+    };
+  }
+
+  if (packaging === "chapters") {
+    const zip = await buildChaptersZipArtifact(
+      state,
+      bookId,
+      book,
+      chapters,
+      chapterFiles,
+      chaptersDir,
+      format,
+      options.approvedOnly ?? false,
+      totalWords,
+    );
+    return {
+      outputPath,
+      fileName: `${bookId}-chapters.zip`,
+      chaptersExported: zip.chaptersExported,
+      totalWords,
+      format,
+      contentType: "application/zip",
+      payload: zip.payload,
+      packaging: "chapters",
     };
   }
 
@@ -127,6 +208,7 @@ export async function buildExportArtifact(
     format,
     contentType: format === "md" ? "text/markdown; charset=utf-8" : "text/plain; charset=utf-8",
     payload: parts.join(format === "md" ? "\n---\n\n" : "\n"),
+    packaging: "single",
   };
 }
 
@@ -137,6 +219,7 @@ export async function writeExportArtifact(
     readonly format?: "txt" | "md" | "epub";
     readonly approvedOnly?: boolean;
     readonly outputPath?: string;
+    readonly packaging?: ExportPackaging;
   },
 ): Promise<Omit<ExportArtifact, "payload" | "contentType" | "fileName">> {
   const artifact = await buildExportArtifact(state, bookId, options);
@@ -147,5 +230,6 @@ export async function writeExportArtifact(
     chaptersExported: artifact.chaptersExported,
     totalWords: artifact.totalWords,
     format: artifact.format,
+    packaging: artifact.packaging,
   };
 }
