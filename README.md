@@ -169,6 +169,8 @@ inkos
 3. 选择可用模型，保存配置。
 4. 回到书籍页面开始写作。
 
+自定义端点的「协议类型」可选 **Chat / Completions**、**Responses** 或 **Anthropic Messages**；「测试连接」会自动探测可用协议和流式开关并回填。自定义服务在保存、重命名、删除和重新加载后保持同一份服务配置，不会残留旧的镜像条目。
+
 Studio 运行时只使用：
 
 ```text
@@ -397,6 +399,23 @@ inkos compose chapter 吞天魔帝
 
 `inkos fanfic init --from source.txt --mode canon` 从原作素材创建同人书。支持四种模式：canon（正典延续）、au（架空世界）、ooc（性格重塑）、cp（CP 向）。内置正典导入器、同人专属审计维度和信息边界管控——确保设定不矛盾。
 
+### 番外、仿写与母本导入
+
+Studio 的「导入」面板把「导入章节」「导入母本」「同人创作」「番外创作」「仿写创作」集中在同一页，与 CLI 的 `inkos import` / `inkos fanfic init` 共用同一套能力。在续写与同人之外，还可以：
+
+- **导入母本**：把已有 InkOS 书籍，或上传的外部 TXT / Markdown / PDF 母本，导入为目标书的 `story/parent_canon.md`，供写手和审计员作为正典参考（CLI：`inkos import canon --from <parent-book-id>`）。
+- **番外创作**：基于母本正典创建番外书，继承母本的题材、平台与字数设定，并共用正典导入器、信息边界管控和专属审计维度。
+- **仿写创作**：按参考文本与故事创意创建仿写书；文风指纹仍由 `inkos style analyze` / `inkos style import` 管理。
+
+### 书籍导出
+
+Studio 书籍页的导出按钮支持 **TXT**、**Markdown**、**EPUB** 三种格式，并可选只导出已通过审阅的章节：
+
+- **TXT / Markdown**：既可整本合并为单文件，也可切换「分章节 (ZIP)」打包。ZIP 内是逐章文件（Markdown 为 `0001.md`，TXT 为 `0001.txt`）加一份 `book.json` 清单，记录书名、语言、格式、打包方式、是否只导出已审阅章节、导出时间、总字数和每章字数。
+- **EPUB**：固定单文件输出，用于手机 / Kindle 阅读。
+
+CLI 侧 `inkos export` 输出单文件：`--format txt/md/epub`、`--output <path>`、`--approved-only`。
+
 ### 多模型路由
 
 不同 Agent 可以走不同模型和 Provider。写手用 Claude（创意强），审计用 GPT-4o（便宜快速），雷达用本地模型（零成本）。`inkos config set-model` 按 agent 粒度配置，未配置的自动回退全局模型。
@@ -617,7 +636,7 @@ Studio 里的「开放世界」和「分支互动」是交互式创作入口。�
 
 `[id]` 参数在项目只有一本书时可省略，自动检测。所有命令支持 `--json` 输出结构化数据。`draft` / `write next` / `plan chapter` / `compose chapter` 支持 `--context` 传入创作指导，`--words` 覆盖每章目标字数。`book create` 支持 `--brief <file>` 传入创作简报（你的脑洞/设定文档），Architect 会基于此生成设定而非凭空创作。`plan chapter` 会调用 LLM 生成章节意图；`compose chapter` 不要求在线 LLM，可在配置 API Key 之前先检查输入治理结果。
 
-CLI 运行时还支持一次性 LLM 覆盖参数：`--service`、`--model`、`--api-key-env`、`--base-url`、`--api-format <chat|responses>`、`--stream`、`--no-stream`。例如：
+CLI 运行时还支持一次性 LLM 覆盖参数：`--service`、`--model`、`--api-key-env`、`--base-url`、`--api-format <chat|responses|anthropic>`、`--stream`、`--no-stream`。例如：
 
 ```bash
 inkos write next --service google --model gemini-2.5-flash
@@ -635,6 +654,8 @@ inkos up --service moonshot --model kimi-k2.5 --api-key-env MOONSHOT_API_KEY
 ## 参与贡献
 
 欢迎贡献代码。提 issue 或 PR。
+
+本地开发需要 **Node.js 22+** 和 **pnpm 9+**（与 CI 使用的 pnpm 9 一致）。
 
 ```bash
 pnpm install
