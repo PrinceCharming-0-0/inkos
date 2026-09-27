@@ -7,6 +7,11 @@ import { useColors } from "../hooks/use-colors";
 import { tr } from "../lib/app-language";
 import { FileInput, BookCopy, Feather, BookMarked, Upload, Wand2 } from "lucide-react";
 import { waitForStudioBookReady } from "../lib/book-ready";
+import {
+  canSubmitCanonImport,
+  canonImportSourceEqualsTarget,
+  type CanonImportGuard,
+} from "./import-manager-state";
 
 interface BookSummary {
   readonly id: string;
@@ -88,8 +93,20 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
     setLoading(false);
   };
 
+  const canonGuard: CanonImportGuard = {
+    sourceType: canonSourceType,
+    targetBookId: canonTarget,
+    sourceBookId: canonFrom,
+    hasSourceFile: Boolean(canonFile),
+  };
+
   const handleImportCanon = async () => {
-    if (!canonTarget || (canonSourceType === "book" ? !canonFrom : !canonFile)) return;
+    if (!canSubmitCanonImport(canonGuard)) {
+      if (canonImportSourceEqualsTarget(canonGuard)) {
+        setStatus(`Error: ${t("import.sourceEqualsTarget")}`);
+      }
+      return;
+    }
     setLoading(true);
     setStatus("");
     try {
@@ -280,7 +297,10 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
               <option value="">{t("import.selectDerivative")}</option>
               {booksData?.books.map((b) => <option key={b.id} value={b.id}>{b.title}</option>)}
             </select>
-            <button onClick={handleImportCanon} disabled={loading || !canonTarget || (canonSourceType === "book" ? !canonFrom : !canonFile)}
+            {booksData && booksData.books.length === 0 && (
+              <p className="text-xs text-muted-foreground">{t("import.targetBookRequired")}</p>
+            )}
+            <button onClick={handleImportCanon} disabled={loading || !canSubmitCanonImport(canonGuard)}
               className={`px-4 py-2 text-sm rounded-lg ${c.btnPrimary} disabled:opacity-30`}>
               {loading ? t("import.importing") : t("import.canon")}
             </button>

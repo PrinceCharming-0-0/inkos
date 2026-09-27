@@ -6033,6 +6033,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const id = c.req.param("id");
     const { fromBookId } = await c.req.json<{ fromBookId: string }>();
     if (!fromBookId) return c.json({ error: "fromBookId is required" }, 400);
+    if (fromBookId === id) return c.json({ error: "Source book and target book must be different" }, 400);
 
     broadcast("import:start", { bookId: id, type: "canon" });
     try {

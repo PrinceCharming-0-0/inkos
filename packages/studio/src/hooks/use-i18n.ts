@@ -216,7 +216,9 @@ const strings = {
   "import.splitRegex": { zh: "分割正则（可选）", en: "Split regex (optional)" },
   "import.pasteChapters": { zh: "粘贴章节文本...", en: "Paste chapter text..." },
   "import.selectSource": { zh: "选择源（母本）...", en: "Select source (parent)..." },
-  "import.selectDerivative": { zh: "选择目标（衍生）...", en: "Select target (derivative)..." },
+  "import.selectDerivative": { zh: "选择导入目标书籍...", en: "Select the book to import into..." },
+  "import.targetBookRequired": { zh: "还没有书籍，请先在左侧『新建小说』创建", en: "No books yet — create one from \"New Novel\" in the sidebar first" },
+  "import.sourceEqualsTarget": { zh: "源书与目标书不能相同", en: "Source book and target book must be different" },
   "import.fanficTitle": { zh: "同人小说标题", en: "Fanfic title" },
   "import.fanficDone": { zh: "同人已创建", en: "Fanfic created" },
   "import.pasteMaterial": { zh: "粘贴原作文本/设定/角色资料...", en: "Paste source material..." },
@@ -365,6 +367,14 @@ const strings = {
 
   // BookCreate extras
   "create.platform": { zh: "平台", en: "Platform" },
+  "create.guidance": {
+    zh: "这里是建书流程：说出书名、题材、世界观、主角或核心冲突，我会整理后给出确认卡，确认即生成新书。",
+    en: "This is the book creation flow. Tell me the title, genre, world, protagonist, or core conflict — I'll draft a confirmation card before creating the book.",
+  },
+  "create.chatPlaceholder": {
+    zh: "描述你想写的书……",
+    en: "Describe the book you want to write...",
+  },
 
   // Common
   "common.save": { zh: "保存", en: "Save" },

@@ -14,6 +14,7 @@ const reviseFoundationMock = vi.fn();
 const initSpinoffBookMock = vi.fn();
 const initImitationBookMock = vi.fn();
 const importFanficCanonMock = vi.fn();
+const importCanonMock = vi.fn();
 const consolidateMock = vi.fn();
 const evaluateBookQualityMock = vi.fn();
 const reviseDraftMock = vi.fn();
@@ -275,6 +276,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     initSpinoffBook = initSpinoffBookMock;
     initImitationBook = initImitationBookMock;
     importFanficCanon = importFanficCanonMock;
+    importCanon = importCanonMock;
     reviseDraft = reviseDraftMock;
     resyncChapterArtifacts = resyncChapterArtifactsMock;
     writeNextChapter = writeNextChapterMock;
@@ -503,6 +505,7 @@ describe("createStudioServer daemon lifecycle", () => {
     initSpinoffBookMock.mockReset();
     initImitationBookMock.mockReset();
     importFanficCanonMock.mockReset();
+    importCanonMock.mockReset();
     importFanficCanonMock.mockResolvedValue("# Imported Canon");
     consolidateMock.mockReset();
     evaluateBookQualityMock.mockReset();
@@ -6860,6 +6863,36 @@ describe("createStudioServer daemon lifecycle", () => {
       "motherbook",
       "canon",
     );
+  });
+
+  it("import/canon forwards to pipeline.importCanon when source and target books differ", async () => {
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/target-book/import/canon", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fromBookId: "source-book" }),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(importCanonMock).toHaveBeenCalledWith("target-book", "source-book");
+  });
+
+  it("import/canon rejects source-equals-target before running the pipeline", async () => {
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/same-book/import/canon", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fromBookId: "same-book" }),
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("must be different"),
+    });
+    expect(importCanonMock).not.toHaveBeenCalled();
   });
 
   it("spinoff/init validates input, 404s a missing parent, and otherwise runs initSpinoffBook", async () => {
