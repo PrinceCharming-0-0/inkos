@@ -4762,6 +4762,26 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       const message = nonTextModelMessage(reqModel, language);
       return c.json({ error: message, response: message }, 400);
     }
+    // Routing guard: a model that is not in the target service's configured
+    // model list must be rejected explicitly instead of being silently sent to
+    // that service's endpoint (stale chat-store selections after deletes,
+    // renames, or cross-service mismatches).
+    if (reqService && reqModel) {
+      const configuredEntryForRequest = await resolveConfiguredServiceEntry(root, reqService);
+      const configuredModelsForRequest = configuredEntryForRequest?.models ?? [];
+      const normalizedReqModel = reqModel.trim().toLowerCase();
+      if (
+        configuredModelsForRequest.length > 0
+        && !configuredModelsForRequest.some((m) => typeof m === "string" && m.trim().toLowerCase() === normalizedReqModel)
+      ) {
+        const message = pick(
+          language,
+          `模型 ${reqModel} 不属于服务 ${reqService} 的已配置模型，请重新选择。`,
+          `Model ${reqModel} is not a configured model of ${reqService}. Pick one of its configured models.`,
+        );
+        return c.json({ error: message, response: message }, 400);
+      }
+    }
 
     const actionSource = normalizeStudioActionSource(reqActionSource);
     const requestedIntent = normalizeStudioRequestedIntent(reqRequestedIntent);

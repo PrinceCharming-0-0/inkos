@@ -228,7 +228,7 @@ export interface MessageActions {
   // User stop aborts the complete workflow; navigation uses chat scope so a
   // background production task can keep running after its Pi turn is cancelled.
   abortSession: (sessionId: string, scope?: "all" | "chat") => Promise<void>;
-  setSelectedModel: (model: string, service: string) => void;
+  setSelectedModel: (model: string | null, service: string | null) => void;
 }
 
 export interface CreateActions {

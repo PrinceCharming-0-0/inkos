@@ -60,6 +60,8 @@ import {
   setProjectChatSessionId,
   isChatScrollNearBottom,
   shouldShowPlayChoicePanel,
+  buildConfiguredModelGroups,
+  type ChatPageConfiguredServiceEntry,
 } from "./chat-page-state";
 import {
   serializeSkillFolder,
@@ -88,6 +90,7 @@ export interface ChatPageProps {
 }
 
 interface ServiceConfigPayload {
+  readonly services?: ReadonlyArray<ChatPageConfiguredServiceEntry>;
   readonly service?: string | null;
   readonly defaultModel?: string | null;
 }
@@ -380,36 +383,26 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
       || (last.toolExecutions?.some(t => t.status === "running" || t.status === "processing") ?? false);
   }, [messages]);
 
-  // -- Model picker: read raw state, derive with useMemo (stable refs) --
+  // -- Model picker: the authoritative options are the selected service's
+  // configured model list (from /services/config); live/discovered catalogs
+  // (modelsByService) are never mixed into the chat picker. --
   const services = useServiceStore((s) => s.services);
   const servicesLoading = useServiceStore((s) => s.servicesLoading);
-  const bankModelsLoading = useServiceStore((s) => s.bankModelsLoading);
-  const customModelsLoading = useServiceStore((s) => s.customModelsLoading);
-  const modelsByService = useServiceStore((s) => s.modelsByService);
   const fetchServices = useServiceStore((s) => s.fetchServices);
-  const fetchBankModels = useServiceStore((s) => s.fetchBankModels);
-  const fetchCustomModels = useServiceStore((s) => s.fetchCustomModels);
-  const [configuredModelSelection, setConfiguredModelSelection] = useState<ChatPageModelPreference | null>(null);
+  const [serviceConfig, setServiceConfig] = useState<ServiceConfigPayload | null>(null);
   const [serviceConfigLoaded, setServiceConfigLoaded] = useState(false);
 
   useEffect(() => { void fetchServices(); }, [fetchServices]);
-  useEffect(() => {
-    void fetchBankModels();
-    void fetchCustomModels();
-  }, [fetchBankModels, fetchCustomModels]);
   useEffect(() => {
     let cancelled = false;
 
     void fetchJson<ServiceConfigPayload>("/services/config")
       .then((payload) => {
         if (cancelled) return;
-        setConfiguredModelSelection({
-          service: payload.service ?? null,
-          model: payload.defaultModel ?? null,
-        });
+        setServiceConfig(payload);
       })
       .catch(() => {
-        if (!cancelled) setConfiguredModelSelection(null);
+        if (!cancelled) setServiceConfig(null);
       })
       .finally(() => {
         if (!cancelled) setServiceConfigLoaded(true);
@@ -420,23 +413,32 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
     };
   }, []);
 
-  const modelPickerStatus = useMemo(() => {
-    if (servicesLoading || services.length === 0) return "loading" as const;
-    const connected = services.filter((s) => s.connected);
-    if (connected.length === 0) return "no-models" as const;
-    if (bankModelsLoading) return "loading" as const;
-    if (connected.some((s) => (modelsByService[s.service]?.length ?? 0) > 0)) return "ready" as const;
-    const hasConnectedBank = connected.some((s) => !s.service.startsWith("custom"));
-    const hasConnectedCustom = connected.some((s) => s.service.startsWith("custom"));
-    if (!hasConnectedBank && hasConnectedCustom && customModelsLoading) return "loading" as const;
-    return "no-models" as const;
-  }, [services, servicesLoading, bankModelsLoading, customModelsLoading, modelsByService]);
+  const configuredModelSelection = useMemo<ChatPageModelPreference | null>(
+    () => serviceConfig
+      ? { service: serviceConfig.service ?? null, model: serviceConfig.defaultModel ?? null }
+      : null,
+    [serviceConfig],
+  );
 
-  const groupedModels = useMemo(() => {
-    return services
-      .filter((s) => s.connected && (modelsByService[s.service]?.length ?? 0) > 0)
-      .map((s) => ({ service: s.service, label: s.label, models: modelsByService[s.service]! }));
-  }, [services, modelsByService]);
+  // The chat picker is scoped to the selected service only: switching services
+  // happens in the service config page (saving selects the service); the picker
+  // recomputes from the refreshed config on mount.
+  const activeService = selectedService ?? serviceConfig?.service ?? null;
+
+  const groupedModels = useMemo(
+    () => buildConfiguredModelGroups({
+      services,
+      configuredServices: serviceConfig?.services ?? [],
+      activeService,
+    }),
+    [services, serviceConfig, activeService],
+  );
+
+  const modelPickerStatus = useMemo(() => {
+    if (servicesLoading || services.length === 0 || !serviceConfigLoaded) return "loading" as const;
+    if (!services.some((s) => s.connected)) return "no-models" as const;
+    return groupedModels.length > 0 ? "ready" as const : "no-models" as const;
+  }, [services, servicesLoading, serviceConfigLoaded, groupedModels]);
 
   const selectedModelLabel = useMemo(() => {
     if (!selectedModel) return isZh ? "选择模型" : "Select model";
@@ -446,7 +448,10 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
     return group ? `${group.label} · ${modelLabel}` : modelLabel;
   }, [groupedModels, selectedModel, selectedService, isZh]);
 
-  // Auto-select from saved service config first, then fall back to the first available model.
+  // Auto-select from the selected service's configured models; stale or
+  // cross-service selections fall back inside the scoped group (never across
+  // services). When the selected service has no configured models left, clear
+  // the stale selection instead of silently sending it.
   useEffect(() => {
     if (!serviceConfigLoaded) return;
     const nextSelection = pickModelSelection(
@@ -457,8 +462,17 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
     );
     if (nextSelection) {
       setSelectedModel(nextSelection.model, nextSelection.service);
+      return;
     }
-  }, [configuredModelSelection, groupedModels, selectedModel, selectedService, serviceConfigLoaded, setSelectedModel]);
+    if (
+      groupedModels.length === 0
+      && (selectedModel || selectedService)
+      && !servicesLoading
+      && services.some((s) => s.service === activeService && s.connected)
+    ) {
+      setSelectedModel(null, null);
+    }
+  }, [activeService, configuredModelSelection, groupedModels, selectedModel, selectedService, serviceConfigLoaded, services, servicesLoading, setSelectedModel]);
 
   // Auto-resize textarea
   useEffect(() => {

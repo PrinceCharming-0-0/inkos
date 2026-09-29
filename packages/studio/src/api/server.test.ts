@@ -7726,4 +7726,108 @@ describe("createStudioServer daemon lifecycle", () => {
     });
   });
 
+  describe("chat request routing — model must belong to the service's configured models", () => {
+    it("T7: rejects service=A with a model that is only configured on another service", async () => {
+      await writeFile(join(root, "inkos.json"), JSON.stringify({
+        ...projectConfig,
+        llm: {
+          ...projectConfig.llm,
+          service: "custom:FARO API",
+          services: [
+            { service: "custom", name: "FARO API", baseUrl: "https://faro.example/v1", models: ["a1", "a2"] },
+            { service: "custom", name: "Zephyr", baseUrl: "https://zephyr.example/v1", models: ["b1", "b2"] },
+          ],
+        },
+      }, null, 2), "utf-8");
+
+      const { createStudioServer } = await import("./server.js");
+      const app = createStudioServer(cloneProjectConfig() as never, root);
+
+      const response = await app.request("http://localhost/api/v1/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instruction: "你好",
+          sessionId: "agent-session-1",
+          service: "custom:FARO API",
+          model: "b1",
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const payload = await response.json();
+      expect(payload.error).toContain("b1");
+      // The request never reached model resolution.
+      expect(resolveServiceModelMock).not.toHaveBeenCalled();
+    });
+
+    it("T7: accepts a model that is in the service's configured list (case-insensitive)", async () => {
+      await writeFile(join(root, "inkos.json"), JSON.stringify({
+        ...projectConfig,
+        llm: {
+          ...projectConfig.llm,
+          service: "custom:FARO API",
+          services: [
+            { service: "custom", name: "FARO API", baseUrl: "https://faro.example/v1", models: ["a1", "a2"] },
+          ],
+        },
+      }, null, 2), "utf-8");
+      resolveServiceModelMock.mockResolvedValue({
+        model: { id: "a1", api: "openai-completions", provider: "openai", baseUrl: "https://faro.example/v1" },
+        apiKey: "sk-faro",
+      });
+
+      const { createStudioServer } = await import("./server.js");
+      const app = createStudioServer(cloneProjectConfig() as never, root);
+
+      const response = await app.request("http://localhost/api/v1/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instruction: "你好",
+          sessionId: "agent-session-1",
+          service: "custom:FARO API",
+          model: "A1",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ response: "Agent response." });
+    });
+
+    it("does not reject when the service has no configured model list (legacy config)", async () => {
+      await writeFile(join(root, "inkos.json"), JSON.stringify({
+        ...projectConfig,
+        llm: {
+          ...projectConfig.llm,
+          service: "openai",
+          services: [
+            { service: "openai", apiFormat: "chat" },
+          ],
+        },
+      }, null, 2), "utf-8");
+      resolveServiceModelMock.mockResolvedValue({
+        model: { id: "any-model", api: "openai-completions", provider: "openai", baseUrl: "https://api.example.com/v1" },
+        apiKey: "sk-test",
+      });
+
+      const { createStudioServer } = await import("./server.js");
+      const app = createStudioServer(cloneProjectConfig() as never, root);
+
+      const response = await app.request("http://localhost/api/v1/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instruction: "你好",
+          sessionId: "agent-session-1",
+          service: "openai",
+          model: "any-model",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ response: "Agent response." });
+    });
+  });
+
 });

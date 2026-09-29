@@ -14,6 +14,66 @@ export interface ChatPageModelPreference {
   readonly service?: string | null;
 }
 
+/** One entry of the persisted service config (`GET /services/config` → `services`). */
+export interface ChatPageConfiguredServiceEntry {
+  readonly service: string;
+  readonly name?: string | null;
+  readonly models?: ReadonlyArray<string> | null;
+}
+
+export interface ChatPageServiceInfo {
+  readonly service: string;
+  readonly label: string;
+  readonly connected?: boolean;
+}
+
+/** Same identity rule as the server's serviceConfigKey: custom entries are keyed by name. */
+export function chatServiceConfigKey(entry: {
+  readonly service: string;
+  readonly name?: string | null;
+}): string {
+  return entry.service === "custom" ? `custom:${entry.name ?? "Custom"}` : entry.service;
+}
+
+/**
+ * Authoritative chat picker options: the selected service's persisted
+ * (configured) model list only. Live/discovered catalogs are never an input —
+ * they belong to the service config page as "addable" suggestions. At most one
+ * group is returned, scoped to `activeService` (or, when nothing is selected
+ * yet, the first connected service that actually has configured models).
+ */
+export function buildConfiguredModelGroups(args: {
+  readonly services: ReadonlyArray<ChatPageServiceInfo>;
+  readonly configuredServices: ReadonlyArray<ChatPageConfiguredServiceEntry>;
+  readonly activeService?: string | null;
+}): ChatPageModelGroup[] {
+  const modelsByKey = new Map<string, string[]>();
+  for (const entry of args.configuredServices) {
+    const seen = new Set<string>();
+    const models: string[] = [];
+    for (const raw of entry.models ?? []) {
+      const id = typeof raw === "string" ? raw.trim() : "";
+      const key = id.toLowerCase();
+      if (!id || seen.has(key)) continue;
+      seen.add(key);
+      models.push(id);
+    }
+    modelsByKey.set(chatServiceConfigKey(entry), models);
+  }
+
+  const connected = args.services.filter((service) => service.connected !== false);
+  let target = args.activeService?.trim() || null;
+  if (!target) {
+    target = connected.find((service) => (modelsByKey.get(service.service)?.length ?? 0) > 0)?.service ?? null;
+  }
+  if (!target) return [];
+
+  const group = connected.find((service) => service.service === target);
+  const models = modelsByKey.get(target) ?? [];
+  if (!group || models.length === 0) return [];
+  return [{ service: group.service, label: group.label, models: models.map((id) => ({ id, name: id })) }];
+}
+
 export interface ChatPageSessionSummary {
   readonly sessionId: string;
   readonly sessionKind?: string;
