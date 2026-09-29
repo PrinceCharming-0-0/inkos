@@ -24,6 +24,89 @@ export function mergeServiceDetailModels(
   return merged;
 }
 
+function sameModelId(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * Configured models are the user's saved list; discovered models (probe results,
+ * live store catalogs) are only offered for adding and are never shown as configured.
+ */
+export function deriveServiceDetailModelView(
+  configuredModels: ReadonlyArray<ServiceDetailModelInfo>,
+  ...discoveredGroups: ReadonlyArray<ReadonlyArray<ServiceDetailModelInfo | string> | undefined>
+): { configured: ServiceDetailModelInfo[]; discovered: ServiceDetailModelInfo[] } {
+  const configured = mergeServiceDetailModels(configuredModels);
+  const discovered = mergeServiceDetailModels(...discoveredGroups)
+    .filter((model) => !configured.some((item) => sameModelId(item.id, model.id)));
+  return { configured, discovered };
+}
+
+export function removeServiceDetailModel(
+  configuredModels: ReadonlyArray<ServiceDetailModelInfo>,
+  modelId: string,
+): ServiceDetailModelInfo[] {
+  return configuredModels.filter((model) => !sameModelId(model.id, modelId));
+}
+
+/** Discovery seeds the configured list once; after that the user's list is authoritative. */
+export function applyDiscoveredServiceDetailModels(args: {
+  readonly configuredModels: ReadonlyArray<ServiceDetailModelInfo>;
+  readonly hasConfiguredModelList: boolean;
+  readonly discoveredModels: ReadonlyArray<ServiceDetailModelInfo>;
+}): { configuredModels: ServiceDetailModelInfo[]; hasConfiguredModelList: boolean } {
+  if (args.hasConfiguredModelList) {
+    return { configuredModels: [...args.configuredModels], hasConfiguredModelList: true };
+  }
+  return {
+    configuredModels: mergeServiceDetailModels(args.configuredModels, args.discoveredModels),
+    hasConfiguredModelList: true,
+  };
+}
+
+export interface ServiceDetailIdentity {
+  readonly isCustom: boolean;
+  /** Trimmed name currently typed into the form (custom services only). */
+  readonly customName: string;
+  /** Identity stored before this edit; null for a custom service that does not exist yet. */
+  readonly persistedServiceId: string | null;
+  /** Identity the edit will be saved under. */
+  readonly effectiveServiceId: string;
+  /** Present only when the edit renames an existing custom service. */
+  readonly previousServiceId?: string;
+}
+
+export function resolveServiceDetailIdentity(routeServiceId: string, customNameInput: string): ServiceDetailIdentity {
+  const isCustom = routeServiceId === "custom" || routeServiceId.startsWith("custom:");
+  if (!isCustom) {
+    return { isCustom, customName: "", persistedServiceId: routeServiceId, effectiveServiceId: routeServiceId };
+  }
+  const customName = customNameInput.trim();
+  const persistedServiceId = routeServiceId.startsWith("custom:") ? routeServiceId : null;
+  const effectiveServiceId = customName ? `custom:${customName}` : (persistedServiceId ?? "custom");
+  return {
+    isCustom,
+    customName,
+    persistedServiceId,
+    effectiveServiceId,
+    ...(persistedServiceId && persistedServiceId !== effectiveServiceId ? { previousServiceId: persistedServiceId } : {}),
+  };
+}
+
+function resolveSavedDefaultModel(
+  candidates: ReadonlyArray<string | undefined>,
+  savedModels: ReadonlyArray<ServiceDetailModelInfo>,
+  hasConfiguredModelList: boolean,
+): string {
+  for (const candidate of candidates) {
+    if (!candidate?.trim()) continue;
+    if (savedModels.length === 0 && !hasConfiguredModelList) return candidate;
+    const match = savedModels.find((model) => sameModelId(model.id, candidate));
+    if (match) return match.id;
+  }
+  return savedModels[0]?.id ?? "";
+}
+
 export interface ServiceDetailDetectedConfig {
   readonly apiFormat?: ApiFormat;
   readonly stream?: boolean;
@@ -124,6 +207,7 @@ export function matchServiceConfigEntryForDetail(
 
 export async function saveServiceConfig(args: {
   readonly effectiveServiceId: string;
+  /** Route id: the persisted identity (`custom` alone means a new custom service). */
   readonly serviceId: string;
   readonly isCustom: boolean;
   readonly apiKeyOptional?: boolean;
@@ -134,6 +218,7 @@ export async function saveServiceConfig(args: {
   readonly stream: boolean;
   readonly temperature: string;
   readonly detectedModel: string;
+  /** The user's explicit list; when present it replaces, and is never merged with, probe results. */
   readonly configuredModels?: ReadonlyArray<ServiceDetailModelInfo | string>;
   readonly verifiedProbe?: ServiceDetailVerifiedProbe | null;
   readonly fetchJsonImpl?: JsonFetcher;
@@ -160,6 +245,21 @@ export async function saveServiceConfig(args: {
       detectedConfig: null,
     };
   }
+  if (args.isCustom && !args.resolvedCustomName.trim()) {
+    return {
+      status: { state: "error", message: "请先填写服务名称" },
+      detectedModel: "",
+      detectedConfig: null,
+    };
+  }
+
+  const persistedServiceId = args.isCustom
+    ? (args.serviceId.startsWith("custom:") ? args.serviceId : null)
+    : args.serviceId;
+  const previousService = persistedServiceId && persistedServiceId !== args.effectiveServiceId
+    ? persistedServiceId
+    : undefined;
+  const isCreate = args.isCustom && !persistedServiceId;
 
   const verifiedBaseUrl = args.isCustom ? trimmedBaseUrl : "";
   const verified = args.verifiedProbe;
@@ -204,40 +304,64 @@ export async function saveServiceConfig(args: {
     };
   }
 
-  const detectedModel = probe.selectedModel ?? args.detectedModel;
-  const savedModels = mergeServiceDetailModels(probe.models, args.configuredModels);
+  const hasConfiguredModelList = args.configuredModels !== undefined;
+  const savedModels = hasConfiguredModelList
+    ? mergeServiceDetailModels(args.configuredModels)
+    : mergeServiceDetailModels(probe.models);
+  const detectedModel = resolveSavedDefaultModel(
+    [probe.selectedModel, args.detectedModel],
+    savedModels,
+    hasConfiguredModelList,
+  );
   const detectedConfig = probe.detected ?? null;
   const savedApiFormat = detectedConfig?.apiFormat ?? args.apiFormat;
   const savedStream = typeof detectedConfig?.stream === "boolean" ? detectedConfig.stream : args.stream;
   const savedBaseUrl = args.isCustom ? (detectedConfig?.baseUrl ?? trimmedBaseUrl) : undefined;
 
-  await fetchJsonImpl(`/services/${encodeURIComponent(args.effectiveServiceId)}/secret`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ apiKey: trimmedKey }),
-  });
+  const saveSecret = async () => {
+    await fetchJsonImpl(`/services/${encodeURIComponent(args.effectiveServiceId)}/secret`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: trimmedKey }),
+    });
+  };
+  // Create/rename can be rejected (duplicate name), so the config goes first and the
+  // secret is only written once the server has accepted the new identity.
+  const identityChanges = isCreate || Boolean(previousService);
+  if (!identityChanges) await saveSecret();
 
-  await fetchJsonImpl("/services/config", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      service: args.effectiveServiceId,
-      ...(detectedModel ? { defaultModel: detectedModel } : {}),
-      services: [
-        {
-          service: args.isCustom ? "custom" : args.serviceId,
-          temperature: parseFloat(args.temperature),
-          apiFormat: savedApiFormat,
-          stream: savedStream,
-          models: savedModels.map((model) => model.id),
-          ...(args.isCustom ? {
-            name: args.resolvedCustomName,
-            baseUrl: savedBaseUrl,
-          } : {}),
-        },
-      ],
-    }),
-  });
+  try {
+    await fetchJsonImpl("/services/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service: args.effectiveServiceId,
+        ...(previousService ? { previousService } : {}),
+        ...(isCreate ? { intent: "create" } : {}),
+        ...(detectedModel ? { defaultModel: detectedModel } : {}),
+        services: [
+          {
+            service: args.isCustom ? "custom" : args.serviceId,
+            temperature: parseFloat(args.temperature),
+            apiFormat: savedApiFormat,
+            stream: savedStream,
+            models: savedModels.map((model) => model.id),
+            ...(args.isCustom ? {
+              name: args.resolvedCustomName.trim(),
+              baseUrl: savedBaseUrl,
+            } : {}),
+          },
+        ],
+      }),
+    });
+  } catch (error) {
+    return {
+      status: { state: "error", message: error instanceof Error ? error.message : "保存失败" },
+      detectedModel: "",
+      detectedConfig: null,
+    };
+  }
+  if (identityChanges) await saveSecret();
 
   return {
     status: { state: "connected", models: savedModels },

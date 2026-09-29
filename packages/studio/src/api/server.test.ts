@@ -7154,6 +7154,7 @@ describe("createStudioServer daemon lifecycle", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           service: "custom:New",
+          previousService: "custom:Old",
           services: {
             "custom:New": {
               name: "New",
@@ -7219,12 +7220,13 @@ describe("createStudioServer daemon lifecycle", () => {
       const { createStudioServer } = await import("./server.js");
       const app = createStudioServer(cloneProjectConfig() as never, root);
 
-      // Rename to custom:New (implicitly should update secret key)
+      // Rename to custom:New; the explicit previousService carries the secret over
       const rename = await app.request("http://localhost/api/v1/services/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           service: "custom:New",
+          previousService: "custom:Old",
           services: {
             "custom:New": {
               name: "New",
@@ -7237,12 +7239,11 @@ describe("createStudioServer daemon lifecycle", () => {
 
       expect(rename.status).toBe(200);
 
-      // R2 expectations:
-      // - Old secret key should not orphan (should be migrated or explicitly handled)
-      // - New secret key should be readable
-      // Note: current implementation may not handle this perfectly,
-      // which would indicate a RED test failure
-      expect(secretsState).toBeDefined();
+      // R2 expectations: the secret follows the renamed identity and the old key is dropped.
+      expect(secretsState["custom:New"]).toEqual({ apiKey: "sk-old-secret" });
+      expect(saveSecretsMock).toHaveBeenLastCalledWith(root, {
+        services: { "custom:New": { apiKey: "sk-old-secret" } },
+      });
     });
 
     it("R3: does not affect current selection when renaming a non-selected service", async () => {
@@ -7324,6 +7325,7 @@ describe("createStudioServer daemon lifecycle", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           service: "custom:AnthropicServiceRenamed",
+          previousService: "custom:AnthropicService",
           services: {
             "custom:AnthropicServiceRenamed": {
               name: "AnthropicServiceRenamed",
@@ -7464,6 +7466,7 @@ describe("createStudioServer daemon lifecycle", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           service: "custom:NewName",
+          previousService: "custom:OldName",
           services: {
             "custom:NewName": {
               name: "NewName",
@@ -7480,6 +7483,246 @@ describe("createStudioServer daemon lifecycle", () => {
       // M3 expectations: model should be preserved
       expect(raw.llm.service).toBe("custom:NewName");
       expect(raw.llm.defaultModel).toBe("model-x");
+    });
+  });
+
+  // Multi custom-service lifecycle: every save must be scoped to the service it
+  // names. Rename only happens when the request carries an explicit
+  // previousService; the selected service is never used to guess intent.
+  describe("custom service lifecycle — multi-service regression", () => {
+    const MOONSHOT = { service: "moonshot", models: ["kimi-k2.5"], temperature: 1 };
+    const SERVICE_A = {
+      service: "custom",
+      name: "A",
+      baseUrl: "https://a.example/v1",
+      models: ["a-1", "a-2"],
+      temperature: 0.5,
+      apiFormat: "chat",
+      stream: true,
+    };
+    const SERVICE_B = {
+      service: "custom",
+      name: "B",
+      baseUrl: "https://b.example/v1",
+      models: ["b-1", "b-2", "b-3"],
+      temperature: 0.9,
+      apiFormat: "anthropic",
+      stream: false,
+    };
+    let secretsState: Record<string, { apiKey: string }>;
+
+    async function seed(selected: string, defaultModel: string, extra: Array<Record<string, unknown>> = []) {
+      await writeFile(join(root, "inkos.json"), JSON.stringify({
+        ...projectConfig,
+        llm: {
+          service: selected,
+          defaultModel,
+          services: [MOONSHOT, SERVICE_A, SERVICE_B, ...extra],
+        },
+      }, null, 2), "utf-8");
+      secretsState = {
+        moonshot: { apiKey: "sk-moon" },
+        "custom:A": { apiKey: "sk-a" },
+        "custom:B": { apiKey: "sk-b" },
+      };
+      loadSecretsMock.mockImplementation(async () => ({ services: structuredClone(secretsState) }));
+      saveSecretsMock.mockImplementation(async (_root: string, secrets: { services: Record<string, { apiKey: string }> }) => {
+        secretsState = structuredClone(secrets.services);
+      });
+      const { createStudioServer } = await import("./server.js");
+      return createStudioServer(cloneProjectConfig() as never, root);
+    }
+
+    async function putConfig(app: { request: (url: string, init: RequestInit) => Response | Promise<Response> }, body: unknown) {
+      return await app.request("http://localhost/api/v1/services/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+
+    async function reload(app: { request: (url: string) => Response | Promise<Response> }) {
+      const response = await app.request("http://localhost/api/v1/services/config");
+      expect(response.status).toBe(200);
+      const payload = await response.json() as {
+        services: Array<Record<string, unknown>>;
+        service: string | null;
+        defaultModel: string | null;
+      };
+      const byKey = new Map(payload.services.map((entry) => [
+        entry.service === "custom" ? `custom:${String(entry.name)}` : String(entry.service),
+        entry,
+      ]));
+      return { ...payload, byKey };
+    }
+
+    it.each([
+      ["plain upsert", {}],
+      ["explicit create intent", { intent: "create" }],
+    ])("T1: adding custom:C while custom:A is selected keeps A and B untouched (%s)", async (_label, extraBody) => {
+      const app = await seed("custom:A", "a-1");
+      const response = await putConfig(app, {
+        ...extraBody,
+        service: "custom:C",
+        defaultModel: "c-1",
+        services: [{ service: "custom", name: "C", baseUrl: "https://c.example/v1", models: ["c-1"], apiFormat: "chat", stream: true, temperature: 0.7 }],
+      });
+
+      expect(response.status).toBe(200);
+      const after = await reload(app);
+      expect([...after.byKey.keys()].sort()).toEqual(["custom:A", "custom:B", "custom:C", "moonshot"]);
+      expect(after.byKey.get("custom:A")).toEqual(SERVICE_A);
+      expect(after.byKey.get("custom:B")).toEqual(SERVICE_B);
+      expect(after.byKey.get("moonshot")).toEqual(MOONSHOT);
+      expect(after.byKey.get("custom:C")).toMatchObject({ baseUrl: "https://c.example/v1", models: ["c-1"] });
+      expect(secretsState["custom:A"]).toEqual({ apiKey: "sk-a" });
+      expect(secretsState["custom:B"]).toEqual({ apiKey: "sk-b" });
+    });
+
+    it("T2: editing non-selected custom:B does not delete or modify selected custom:A", async () => {
+      const app = await seed("custom:A", "a-1");
+      const response = await putConfig(app, {
+        service: "custom:B",
+        defaultModel: "b-1",
+        services: [{ ...SERVICE_B, temperature: 0.3, baseUrl: "https://b2.example/v1" }],
+      });
+
+      expect(response.status).toBe(200);
+      const after = await reload(app);
+      expect([...after.byKey.keys()].sort()).toEqual(["custom:A", "custom:B", "moonshot"]);
+      expect(after.byKey.get("custom:A")).toEqual(SERVICE_A);
+      expect(after.byKey.get("custom:B")).toEqual({ ...SERVICE_B, temperature: 0.3, baseUrl: "https://b2.example/v1" });
+      expect(secretsState["custom:A"]).toEqual({ apiKey: "sk-a" });
+      expect(secretsState["custom:B"]).toEqual({ apiKey: "sk-b" });
+    });
+
+    it.each([
+      ["custom:A"],
+      ["custom:B"],
+    ])("T3: saving B with m2 removed replaces B.models only (selected=%s)", async (selected) => {
+      const app = await seed(selected, selected === "custom:A" ? "a-1" : "b-2");
+      const response = await putConfig(app, {
+        service: "custom:B",
+        defaultModel: "b-1",
+        services: [{ ...SERVICE_B, models: ["b-1", "b-3"] }],
+      });
+
+      expect(response.status).toBe(200);
+      const after = await reload(app);
+      expect(after.byKey.get("custom:A")).toEqual(SERVICE_A);
+      expect(after.byKey.get("custom:B")?.models).toEqual(["b-1", "b-3"]);
+      expect(after.defaultModel).toBe("b-1");
+      const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
+      expect(raw.llm.model).not.toBe("b-2");
+    });
+
+    it("T3: a save that removes the selected default model without naming a new one does not leave defaultModel on it", async () => {
+      const app = await seed("custom:B", "b-2");
+      const response = await putConfig(app, {
+        services: [{ service: "custom", name: "B", models: ["b-1", "b-3"] }],
+      });
+
+      expect(response.status).toBe(200);
+      const after = await reload(app);
+      expect(after.byKey.get("custom:B")?.models).toEqual(["b-1", "b-3"]);
+      expect(after.defaultModel).not.toBe("b-2");
+      expect(["b-1", "b-3"]).toContain(after.defaultModel);
+      expect(after.byKey.get("custom:A")).toEqual(SERVICE_A);
+    });
+
+    it.each([
+      ["custom:B", "b-2"],
+      ["custom:A", "a-1"],
+    ])("T4: explicit rename custom:B -> custom:C migrates config + secret and preserves A (selected=%s)", async (selected, defaultModel) => {
+      const app = await seed(selected, defaultModel);
+      const response = await putConfig(app, {
+        service: "custom:C",
+        previousService: "custom:B",
+        // Minimal payload: everything not named here must be carried over from B.
+        services: [{ service: "custom", name: "C" }],
+      });
+
+      expect(response.status).toBe(200);
+      const after = await reload(app);
+      expect([...after.byKey.keys()].sort()).toEqual(["custom:A", "custom:C", "moonshot"]);
+      expect(after.byKey.has("custom:B")).toBe(false);
+      expect(after.byKey.get("custom:A")).toEqual(SERVICE_A);
+      expect(after.byKey.get("custom:C")).toEqual({ ...SERVICE_B, name: "C" });
+      expect(secretsState).toEqual({
+        moonshot: { apiKey: "sk-moon" },
+        "custom:A": { apiKey: "sk-a" },
+        "custom:C": { apiKey: "sk-b" },
+      });
+
+      const secret = await app.request("http://localhost/api/v1/services/custom%3AC/secret");
+      await expect(secret.json()).resolves.toEqual({ apiKey: "sk-b" });
+      const oldSecret = await app.request("http://localhost/api/v1/services/custom%3AB/secret");
+      await expect(oldSecret.json()).resolves.toEqual({ apiKey: "" });
+    });
+
+    it("T5: deleting custom:B removes only B and its secret", async () => {
+      const app = await seed("custom:A", "a-1");
+      const response = await app.request("http://localhost/api/v1/services/custom%3AB", { method: "DELETE" });
+
+      expect(response.status).toBe(200);
+      const after = await reload(app);
+      expect([...after.byKey.keys()].sort()).toEqual(["custom:A", "moonshot"]);
+      expect(after.byKey.get("custom:A")).toEqual(SERVICE_A);
+      expect(after.service).toBe("custom:A");
+      expect(after.defaultModel).toBe("a-1");
+      expect(secretsState).toEqual({
+        moonshot: { apiKey: "sk-moon" },
+        "custom:A": { apiKey: "sk-a" },
+      });
+    });
+
+    it("T7: creating custom:B when B already exists is rejected without touching config or secrets", async () => {
+      const app = await seed("custom:A", "a-1");
+      const before = await readFile(join(root, "inkos.json"), "utf-8");
+      const response = await putConfig(app, {
+        intent: "create",
+        service: "custom:B",
+        services: [{ service: "custom", name: "B", baseUrl: "https://impostor.example/v1", models: ["x-1"] }],
+      });
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining("B") });
+      expect(await readFile(join(root, "inkos.json"), "utf-8")).toBe(before);
+      expect(secretsState["custom:B"]).toEqual({ apiKey: "sk-b" });
+    });
+
+    it("T7: renaming custom:A onto existing custom:B is rejected without touching config or secrets", async () => {
+      const app = await seed("custom:A", "a-1");
+      const before = await readFile(join(root, "inkos.json"), "utf-8");
+      const response = await putConfig(app, {
+        service: "custom:B",
+        previousService: "custom:A",
+        services: [{ service: "custom", name: "B" }],
+      });
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining("B") });
+      expect(await readFile(join(root, "inkos.json"), "utf-8")).toBe(before);
+      expect(secretsState).toEqual({
+        moonshot: { apiKey: "sk-moon" },
+        "custom:A": { apiKey: "sk-a" },
+        "custom:B": { apiKey: "sk-b" },
+      });
+    });
+
+    it.each([
+      ["whitespace name in array entry", { services: [{ service: "custom", name: "   ", baseUrl: "https://x.example/v1" }] }],
+      ["empty name in array entry", { intent: "create", services: [{ service: "custom", name: "", baseUrl: "https://x.example/v1" }] }],
+      ["blank keyed object entry", { services: { "custom:  ": { baseUrl: "https://x.example/v1" } } }],
+      ["blank rename target", { service: "custom: ", previousService: "custom:B", services: [{ service: "custom", name: " " }] }],
+    ])("T7: rejects a blank custom service name (%s)", async (_label, body) => {
+      const app = await seed("custom:A", "a-1");
+      const before = await readFile(join(root, "inkos.json"), "utf-8");
+      const response = await putConfig(app, body);
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: expect.any(String) });
+      expect(await readFile(join(root, "inkos.json"), "utf-8")).toBe(before);
     });
   });
 

@@ -1851,6 +1851,45 @@ function mergeServiceConfig(existing: ServiceConfigEntry[], updates: ServiceConf
   return [...merged.values()];
 }
 
+function isBlankCustomServiceId(serviceId: string): boolean {
+  return serviceId.startsWith("custom:") && !serviceId.slice("custom:".length).trim();
+}
+
+// Mirrors normalizeServiceConfig's shapes; a blank custom name would otherwise be
+// silently collapsed into the shared "custom:Custom" identity.
+function hasBlankCustomServiceName(raw: unknown): boolean {
+  if (Array.isArray(raw)) {
+    return raw.some((entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      const record = entry as Record<string, unknown>;
+      const isCustom = typeof record.service !== "string" || record.service.length === 0 || record.service === "custom";
+      return isCustom && typeof record.name === "string" && !record.name.trim();
+    });
+  }
+  if (raw && typeof raw === "object") {
+    return Object.entries(raw as Record<string, unknown>).some(([serviceId, value]) => {
+      if (isBlankCustomServiceId(serviceId)) return true;
+      if (serviceId !== "custom" || !value || typeof value !== "object") return false;
+      const name = (value as Record<string, unknown>).name;
+      return typeof name === "string" && !name.trim();
+    });
+  }
+  return false;
+}
+
+// A custom service's configured model list is its whole catalog, so a default
+// model that the same save removed from that list must not survive as a stale pointer.
+function reconcileSelectedCustomDefaultModel(llm: Record<string, unknown>, updatedModelKeys: ReadonlySet<string>): void {
+  const selectedService = typeof llm.service === "string" ? llm.service : undefined;
+  if (!selectedService?.startsWith("custom:") || !updatedModelKeys.has(selectedService)) return;
+  const models = normalizeServiceConfig(llm.services)
+    .find((entry) => serviceConfigKey(entry) === selectedService)?.models;
+  if (!models?.length) return;
+  const current = typeof llm.defaultModel === "string" ? llm.defaultModel.trim().toLowerCase() : "";
+  if (!current || models.some((model) => model.toLowerCase() === current)) return;
+  llm.defaultModel = models[0];
+}
+
 function normalizeCoverConfig(raw: unknown): { service: string; model: string; baseUrl?: string } | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const record = raw as Record<string, unknown>;
@@ -3610,31 +3649,63 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
   });
 
   app.put("/api/v1/services/config", async (c) => {
-    const body = await c.req.json<{ services?: unknown; defaultModel?: string; configSource?: LLMConfigSource; service?: string }>();
+    const body = await c.req.json<{
+      services?: unknown;
+      defaultModel?: string;
+      configSource?: LLMConfigSource;
+      service?: string;
+      // Rename is only ever explicit: the persisted identity being renamed to `service`.
+      previousService?: string;
+      // "create" rejects saving onto an existing custom service instead of merging into it.
+      intent?: "create";
+    }>();
+    const reject = async (status: 400 | 404 | 409, zh: string, en: string) =>
+      c.json({ error: pick(await currentProjectLanguage(), zh, en) }, status);
     const config = await loadRawConfig(root);
     config.llm = config.llm ?? {};
     const llm = config.llm as Record<string, unknown>;
-    if (body.services !== undefined) {
-      const existingServices = normalizeServiceConfig(llm.services);
-      const incomingServices = normalizeServiceConfig(body.services);
+    const existingServices = normalizeServiceConfig(llm.services);
+    const existingKeys = new Set(existingServices.map(serviceConfigKey));
+    const previousService = typeof body.previousService === "string" && body.previousService !== body.service
+      ? body.previousService
+      : undefined;
 
-      // Handle service rename: if the selected service is changing and it's a custom service rename,
-      // remove the old entry to avoid duplication
-      const oldSelectedService = typeof llm.service === "string" ? llm.service : undefined;
-      const newSelectedService = body.service ?? oldSelectedService;
+    if (
+      [body.service, previousService].some((id) => typeof id === "string" && isBlankCustomServiceId(id))
+      || hasBlankCustomServiceName(body.services)
+    ) {
+      return await reject(400, "自定义服务名称不能为空。", "Custom service name must not be empty.");
+    }
 
-      let merged = mergeServiceConfig(existingServices, incomingServices);
-
-      // If changing from one custom service to another, remove the old one
-      if (
-        oldSelectedService && newSelectedService && oldSelectedService !== newSelectedService &&
-        oldSelectedService.startsWith("custom:") && newSelectedService.startsWith("custom:")
-      ) {
-        const oldName = oldSelectedService.slice("custom:".length);
-        merged = merged.filter((entry) => !(entry.service === "custom" && entry.name === oldName));
+    let baseServices = existingServices;
+    if (previousService) {
+      const nextService = body.service;
+      if (!nextService || !previousService.startsWith("custom:") || !nextService.startsWith("custom:")) {
+        return await reject(400, "只有自定义服务可以重命名。", "Only custom services can be renamed.");
       }
+      if (!existingKeys.has(previousService)) {
+        return await reject(404, `未找到要重命名的服务：${previousService}`, `Service to rename was not found: ${previousService}`);
+      }
+      const nextName = nextService.slice("custom:".length);
+      if (existingKeys.has(nextService)) {
+        return await reject(409, `自定义服务“${nextName}”已存在。`, `Custom service “${nextName}” already exists.`);
+      }
+      // Rename in place so the renamed entry keeps every attribute (and its position).
+      baseServices = existingServices.map((entry) =>
+        serviceConfigKey(entry) === previousService ? { ...entry, name: nextName } : entry);
+    }
 
-      llm.services = merged;
+    const incomingServices = body.services !== undefined ? normalizeServiceConfig(body.services) : [];
+    if (body.intent === "create") {
+      const duplicate = incomingServices.find((entry) => entry.service === "custom" && existingKeys.has(serviceConfigKey(entry)));
+      if (duplicate) {
+        const name = duplicate.name ?? "Custom";
+        return await reject(409, `自定义服务“${name}”已存在。`, `Custom service “${name}” already exists.`);
+      }
+    }
+
+    if (previousService || body.services !== undefined) {
+      llm.services = mergeServiceConfig(baseServices, incomingServices);
     }
     if (body.defaultModel !== undefined) {
       llm.defaultModel = body.defaultModel;
@@ -3654,7 +3725,33 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     if (body.service !== undefined) {
       llm.service = body.service;
     }
+    if (body.defaultModel === undefined) {
+      reconcileSelectedCustomDefaultModel(llm, new Set(
+        incomingServices.filter((entry) => entry.models !== undefined).map(serviceConfigKey),
+      ));
+    }
     syncTopLevelLlmMirror(llm);
+
+    if (previousService && body.service) {
+      // Copy the secret to the new identity before the config points at it, and only
+      // drop the old key once the renamed config is saved: an interruption leaves at
+      // most an orphaned copy, never a service without its key.
+      const secrets = await loadSecrets(root);
+      const previousSecret = secrets.services[previousService];
+      if (previousSecret) {
+        secrets.services[body.service] = previousSecret;
+        await saveSecrets(root, secrets);
+      }
+      await saveRawConfig(root, config);
+      if (previousSecret) {
+        const nextSecrets = await loadSecrets(root);
+        delete nextSecrets.services[previousService];
+        await saveSecrets(root, nextSecrets);
+      }
+      modelListCache.clear();
+      return c.json({ ok: true });
+    }
+
     await saveRawConfig(root, config);
     return c.json({ ok: true });
   });

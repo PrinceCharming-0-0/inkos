@@ -6,11 +6,15 @@ import { ServiceQuickLinks } from "../components/ServiceQuickLinks";
 import { tr } from "../lib/app-language";
 import { normalizeApiFormat, type ApiFormat } from "@actalk/inkos-core/models/project";
 import {
+  applyDiscoveredServiceDetailModels,
   deleteServiceConfig,
+  deriveServiceDetailModelView,
   matchServiceConfigEntryForDetail,
   mergeServiceDetailModels,
   probeServiceForDetail,
   rehydrateServiceConnectionStatus,
+  removeServiceDetailModel,
+  resolveServiceDetailIdentity,
   saveServiceConfig,
   type ServiceDetailConnectionStatus as ConnectionStatus,
   type ServiceDetailDetectedConfig as DetectedConfig,
@@ -60,6 +64,9 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   const [detectedConfig, setDetectedConfig] = useState<DetectedConfig | null>(null);
   const [verifiedProbe, setVerifiedProbe] = useState<VerifiedProbe | null>(null);
   const [configuredModels, setConfiguredModels] = useState<ModelInfo[]>([]);
+  // False until the list is loaded non-empty, seeded by a first discovery, or edited;
+  // until then a save may fill it from the probe, afterwards it is saved verbatim.
+  const [hasConfiguredModelList, setHasConfiguredModelList] = useState(false);
   const [modelIdInput, setModelIdInput] = useState("");
 
   // -- Unified connection status --
@@ -81,22 +88,27 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         if (matchedApiFormat) setApiFormat(matchedApiFormat);
         if (typeof matched.stream === "boolean") setStream(matched.stream);
         if (Array.isArray(matched.models)) {
-          setConfiguredModels(mergeServiceDetailModels(matched.models.filter((model): model is string => typeof model === "string")));
+          const persistedModels = mergeServiceDetailModels(matched.models.filter((model): model is string => typeof model === "string"));
+          setConfiguredModels(persistedModels);
+          setHasConfiguredModelList(persistedModels.length > 0);
         }
       })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [isCustom, persistedCustomName, serviceId]);
 
-  const resolvedCustomName = persistedCustomName || customName.trim() || "Custom";
-  const effectiveServiceId = isCustom ? `custom:${resolvedCustomName}` : serviceId;
+  // persistedServiceId keeps the stored identity (secret lookup, rename source) until
+  // save succeeds; effectiveServiceId follows the name being typed.
+  const { customName: resolvedCustomName, persistedServiceId, effectiveServiceId } = resolveServiceDetailIdentity(serviceId, customName);
+  const storeServiceId = persistedServiceId ?? effectiveServiceId;
   const label = isCustom ? (customName || persistedCustomName || tr("自定义服务", "Custom service")) : (svc?.label ?? serviceId);
-  const storeModels = useServiceStore((s) => s.modelsByService[effectiveServiceId]);
+  const storeModels = useServiceStore((s) => s.modelsByService[storeServiceId]);
 
   useEffect(() => {
+    if (!persistedServiceId) return;
     let cancelled = false;
     void rehydrateServiceConnectionStatus({
-      effectiveServiceId,
+      effectiveServiceId: persistedServiceId,
       shouldVerify: Boolean(svc?.connected),
       isCustom,
       baseUrl,
@@ -110,7 +122,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         setDetectedConfig(result.detectedConfig);
         setStatus(result.status);
         if (result.status.state === "connected") {
-          setStoreModels(effectiveServiceId, result.status.models);
+          setStoreModels(persistedServiceId, result.status.models);
         }
       })
       .catch(() => {
@@ -121,7 +133,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   }, [
     apiFormat,
     baseUrl,
-    effectiveServiceId,
+    persistedServiceId,
     isCustom,
     setStoreModels,
     stream,
@@ -133,12 +145,13 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   // -- Derived state --
   const isConnected = Boolean(svc?.connected);
   const apiKeyOptional = Boolean(svc?.apiKeyOptional);
-  const models = mergeServiceDetailModels(
+  // Only the configured list is persisted; probe/live models are offered for adding.
+  const { configured: models, discovered: discoveredModels } = deriveServiceDetailModelView(
     configuredModels,
     status.state === "connected" ? status.models : undefined,
     storeModels,
   );
-  const hasModelCatalog = models.length > 0 || status.state === "connected";
+  const hasModelCatalog = models.length > 0 || discoveredModels.length > 0 || status.state === "connected";
   const isBusy = status.state === "testing" || status.state === "saving";
 
   // -- Handlers --
@@ -180,14 +193,19 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
           selectedModel: result.selectedModel,
           detected: result.detected,
         });
-        const mergedModels = mergeServiceDetailModels(configuredModels, models);
-        setConfiguredModels(mergedModels);
-        setStatus({ state: "connected", models: mergedModels });
-        setStoreModels(effectiveServiceId, mergedModels); // Write to global store
+        const next = applyDiscoveredServiceDetailModels({
+          configuredModels,
+          hasConfiguredModelList,
+          discoveredModels: models,
+        });
+        setConfiguredModels(next.configuredModels);
+        setHasConfiguredModelList(next.hasConfiguredModelList);
+        setStatus({ state: "connected", models });
+        setStoreModels(storeServiceId, next.configuredModels); // Write to global store
       } else {
         setVerifiedProbe(null);
         setStatus({ state: "error", message: result.error ?? tr("连接失败", "Connection failed") });
-        clearStoreModels(effectiveServiceId);
+        clearStoreModels(storeServiceId);
       }
     } catch (e) {
       setVerifiedProbe(null);
@@ -197,10 +215,14 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
 
   const handleDelete = async () => {
     if (!window.confirm(tr(`删除“${label}”的配置和密钥？`, `Delete the config and key for “${label}”?`))) return;
+    if (!persistedServiceId) {
+      nav.toServices();
+      return;
+    }
     setStatus({ state: "saving" });
     try {
-      await deleteServiceConfig(effectiveServiceId);
-      clearStoreModels(effectiveServiceId);
+      await deleteServiceConfig(persistedServiceId);
+      clearStoreModels(persistedServiceId);
       await refreshServices();
       nav.toServices();
     } catch (e) {
@@ -229,7 +251,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         stream,
         temperature,
         detectedModel,
-        configuredModels,
+        configuredModels: hasConfiguredModelList ? configuredModels : undefined,
         verifiedProbe,
       });
       if (result.status.state === "connected") {
@@ -238,6 +260,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         if (isCustom && result.detectedConfig?.baseUrl) setBaseUrl(result.detectedConfig.baseUrl);
         setDetectedModel(result.detectedModel);
         setDetectedConfig(result.detectedConfig);
+        if (persistedServiceId && persistedServiceId !== effectiveServiceId) clearStoreModels(persistedServiceId);
         setStoreModels(effectiveServiceId, result.status.models);
         setStatus(result.status);
       } else {
@@ -251,20 +274,22 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
     }
   };
 
-  const handleAddModel = () => {
-    const next = mergeServiceDetailModels(configuredModels, [modelIdInput]);
+  const handleAddModel = (modelId = modelIdInput) => {
+    const next = mergeServiceDetailModels(configuredModels, [modelId]);
     if (next.length === configuredModels.length) return;
     setConfiguredModels(next);
-    setStoreModels(effectiveServiceId, next);
-    if (status.state === "connected") setStatus({ state: "connected", models: next });
-    setModelIdInput("");
+    setHasConfiguredModelList(true);
+    setStoreModels(storeServiceId, next);
+    if (modelId === modelIdInput) setModelIdInput("");
   };
 
   const handleRemoveModel = (modelId: string) => {
-    const next = models.filter((model) => model.id.toLowerCase() !== modelId.toLowerCase());
+    const next = removeServiceDetailModel(configuredModels, modelId);
     setConfiguredModels(next);
-    setStoreModels(effectiveServiceId, next);
-    if (status.state === "connected") setStatus({ state: "connected", models: next });
+    setHasConfiguredModelList(true);
+    setStoreModels(storeServiceId, next);
+    // A removed model must not come back as the saved default.
+    setDetectedModel((previous) => previous.toLowerCase() === modelId.toLowerCase() ? (next[0]?.id ?? "") : previous);
   };
 
   return (
@@ -407,7 +432,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
             />
             <button
               type="button"
-              onClick={handleAddModel}
+              onClick={() => handleAddModel()}
               disabled={!modelIdInput.trim()}
               className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-3 py-2 text-xs hover:bg-secondary/50 disabled:opacity-40"
             >
@@ -416,7 +441,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
             </button>
           </div>
           <p className="text-xs text-muted-foreground/60">
-            {tr("测试连接发现的模型和手动添加的模型都会在保存后持久化；内置目录只作为兜底。", "Discovered and manually added models are persisted on save; the built-in catalog is only a fallback.")}
+            {tr("保存时按此列表持久化；首次测试连接会用发现的模型填充，之后发现的新模型需手动添加。", "Save persists exactly this list; the first successful test fills it, later discoveries must be added manually.")}
           </p>
           {hasModelCatalog && (
           <div className="space-y-2">
@@ -438,6 +463,27 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
               </div>
             ) : (
               <p className="text-xs text-muted-foreground/60">{tr("点击“测试连接”查看可用模型", "Click “Test connection” to list available models")}</p>
+            )}
+            {discoveredModels.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-xs text-muted-foreground/60">
+                  {tr(`已发现但未配置（${discoveredModels.length}）`, `Discovered, not configured (${discoveredModels.length})`)}
+                </p>
+                <div className="flex gap-1.5 flex-wrap">
+                  {discoveredModels.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => handleAddModel(m.id)}
+                      aria-label={tr(`添加模型 ${m.id}`, `Add model ${m.id}`)}
+                      className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-md border border-dashed border-border/60 text-muted-foreground hover:bg-secondary/50"
+                    >
+                      <Plus size={11} />
+                      {m.name ?? m.id}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
           )}
