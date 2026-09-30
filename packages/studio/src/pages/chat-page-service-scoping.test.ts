@@ -4,210 +4,181 @@ import {
   pickModelSelection,
 } from "./chat-page-state";
 
-describe("chat model picker — service-scoped configured models", () => {
-  // NOTE: the pre-fix bug (live/discovered catalogs and other services' models
-  // leaking into the picker; stale models surviving service switches) was
-  // proven RED against the old live-catalog grouping before the fix; the
-  // obsolete mirror of that grouping has been removed and the fixed behavior
-  // is covered below.
-  const services = [
-    { service: "custom:FARO API", label: "FARO API", connected: true },
-    { service: "custom:Zephyr", label: "Zephyr", connected: true },
-  ];
+const services = [
+  { service: "custom:A", label: "A", connected: true },
+  { service: "custom:B", label: "B", connected: true },
+  { service: "custom:C", label: "C", connected: true },
+];
 
-  describe("buildConfiguredModelGroups — configured models only", () => {
-    const configuredServices = [
-      { service: "custom", name: "FARO API", models: ["a1", "a2"] },
-      { service: "custom", name: "Zephyr", models: ["b1", "b2"] },
+const configuredServices = [
+  { service: "custom", name: "A", models: ["a1", "a2"] },
+  { service: "custom", name: "B", models: ["b1", "b2"] },
+  { service: "custom", name: "C", models: ["c1"] },
+];
+
+function modelIds(groups: ReadonlyArray<{ models: ReadonlyArray<{ id: string }> }>): string[][] {
+  return groups.map((group) => group.models.map((model) => model.id));
+}
+
+describe("chat model picker — configured service groups", () => {
+  it("T1: returns every connected configured service as its own group", () => {
+    const groups = buildConfiguredModelGroups({ services, configuredServices });
+
+    expect(groups.map((group) => group.serviceId)).toEqual([
+      "custom:A",
+      "custom:B",
+      "custom:C",
+    ]);
+    expect(groups.map((group) => group.serviceName)).toEqual(["A", "B", "C"]);
+    expect(modelIds(groups)).toEqual([["a1", "a2"], ["b1", "b2"], ["c1"]]);
+  });
+
+  it("T2: never mixes live or discovered models into configured groups", () => {
+    const groups = buildConfiguredModelGroups({
+      services,
+      configuredServices: [
+        { service: "custom", name: "A", models: ["a1"] },
+        configuredServices[1]!,
+        configuredServices[2]!,
+      ],
+    });
+
+    // The helper has no live catalog input. An upstream A=[a1,a2,a3] probe
+    // therefore cannot make a2/a3 appear here.
+    expect(modelIds(groups)).toEqual([["a1"], ["b1", "b2"], ["c1"]]);
+  });
+
+  it("T3: removes deleted configured models after config refresh", () => {
+    const groups = buildConfiguredModelGroups({
+      services,
+      configuredServices: [
+        { service: "custom", name: "A", models: ["a1"] },
+        configuredServices[1]!,
+        configuredServices[2]!,
+      ],
+    });
+
+    expect(groups[0]?.models.map((model) => model.id)).toEqual(["a1"]);
+    expect(groups.flatMap((group) => group.models.map((model) => model.id))).not.toContain("a2");
+  });
+
+  it("T4: selecting B/b2 yields the B/b2 pair instead of an A/b2 mismatch", () => {
+    const groups = buildConfiguredModelGroups({ services, configuredServices });
+    const bGroup = groups.find((group) => group.serviceId === "custom:B");
+
+    // This is RED on 57843df9 because only the active service group exists.
+    expect(bGroup?.models.map((model) => model.id)).toContain("b2");
+    expect({ service: bGroup?.serviceId, model: bGroup?.models.find((model) => model.id === "b2")?.id })
+      .toEqual({ service: "custom:B", model: "b2" });
+  });
+
+  it("T6: duplicate model ids remain independent options per service", () => {
+    const groups = buildConfiguredModelGroups({
+      services: [services[0]!, services[1]!],
+      configuredServices: [
+        { service: "custom", name: "A", models: ["shared-model"] },
+        { service: "custom", name: "B", models: ["shared-model"] },
+      ],
+    });
+
+    expect(groups.map((group) => [group.serviceId, group.models[0]?.id])).toEqual([
+      ["custom:A", "shared-model"],
+      ["custom:B", "shared-model"],
+    ]);
+  });
+
+  it("T7: a renamed service appears under its new canonical identity", () => {
+    const renamedServices = [
+      { service: "custom:A", label: "A", connected: true },
+      { service: "custom:C", label: "C", connected: true },
     ];
-
-    it("T1: scopes picker options to the selected service's configured models", () => {
-      const groups = buildConfiguredModelGroups({
-        services,
-        configuredServices,
-        activeService: "custom:FARO API",
-      });
-      expect(groups).toEqual([
-        {
-          service: "custom:FARO API",
-          label: "FARO API",
-          models: [
-            { id: "a1", name: "a1" },
-            { id: "a2", name: "a2" },
-          ],
-        },
-      ]);
-      const optionIds = groups.flatMap((group) => group.models.map((model) => model.id));
-      expect(optionIds).not.toContain("b1");
-      expect(optionIds).not.toContain("b2");
-    });
-
-    it("T2: after a service switch, options recompute and the stale model falls back inside the new service", () => {
-      const zephyrGroups = buildConfiguredModelGroups({
-        services,
-        configuredServices,
-        activeService: "custom:Zephyr",
-      });
-      expect(zephyrGroups.flatMap((group) => group.models.map((model) => model.id)))
-        .toEqual(["b1", "b2"]);
-
-      const next = pickModelSelection(zephyrGroups, "a2", "custom:FARO API", {
-        service: "custom:Zephyr",
-        model: "retired-model",
-      });
-      expect(next).not.toBeNull();
-      expect(next!.model).not.toBe("a2");
-      expect(next).toEqual({ model: "b1", service: "custom:Zephyr" });
-    });
-
-    it("T3: a deleted configured model disappears from the picker after config refresh", () => {
-      const afterDelete = [
-        { service: "custom", name: "FARO API", models: ["a1", "a3"] },
-        configuredServices[1]!,
-      ];
-      const groups = buildConfiguredModelGroups({
-        services,
-        configuredServices: afterDelete,
-        activeService: "custom:FARO API",
-      });
-      const optionIds = groups.flatMap((group) => group.models.map((model) => model.id));
-      expect(optionIds).toEqual(["a1", "a3"]);
-      expect(optionIds).not.toContain("a2");
-    });
-
-    it("T4: deleting the currently-selected model falls back to a valid model of the same service", () => {
-      const afterDelete = [
-        { service: "custom", name: "FARO API", models: ["a1", "a3"] },
-        configuredServices[1]!,
-      ];
-      const groups = buildConfiguredModelGroups({
-        services,
-        configuredServices: afterDelete,
-        activeService: "custom:FARO API",
-      });
-      const next = pickModelSelection(groups, "a2", "custom:FARO API", {
-        service: "custom:FARO API",
-        model: "a2",
-      });
-      expect(next).toEqual({ model: "a1", service: "custom:FARO API" });
-    });
-
-    it("T5: updating an unrelated service's configured models does not touch the selected service's options", () => {
-      const before = buildConfiguredModelGroups({
-        services,
-        configuredServices,
-        activeService: "custom:FARO API",
-      });
-      const afterZephyrChange = buildConfiguredModelGroups({
-        services,
-        configuredServices: [
-          configuredServices[0]!,
-          { service: "custom", name: "Zephyr", models: ["b1", "b2", "b9-turbo"] },
-        ],
-        activeService: "custom:FARO API",
-      });
-      expect(afterZephyrChange).toEqual(before);
-    });
-
-    it("T6: live/discovered models never mix into the configured picker options", () => {
-      // The helper takes no live catalog input at all; even with the upstream
-      // probe advertising a1/a2/a3, only the configured a1 is offered.
-      const groups = buildConfiguredModelGroups({
-        services,
-        configuredServices: [
-          { service: "custom", name: "FARO API", models: ["a1"] },
-          configuredServices[1]!,
-        ],
-        activeService: "custom:FARO API",
-      });
-      expect(groups).toEqual([
-        {
-          service: "custom:FARO API",
-          label: "FARO API",
-          models: [{ id: "a1", name: "a1" }],
-        },
-      ]);
-    });
-
-    it("T6b: a configured entry without a model list contributes no group", () => {
-      const groups = buildConfiguredModelGroups({
-        services,
-        configuredServices: [
-          { service: "custom", name: "FARO API", models: [] },
-          { service: "custom", name: "Zephyr" },
-        ],
-        activeService: "custom:FARO API",
-      });
-      expect(groups).toEqual([]);
-    });
-
-    it("C7: a renamed custom service keeps its configured models under the new identity", () => {
-      const renamed = [
+    const groups = buildConfiguredModelGroups({
+      services: renamedServices,
+      configuredServices: [
+        { service: "custom", name: "A", models: ["a1"] },
         { service: "custom", name: "C", models: ["b1", "b2"] },
-        configuredServices[0]!,
-      ];
-      const renamedServices = [
-        { service: "custom:C", label: "C", connected: true },
-        { service: "custom:FARO API", label: "FARO API", connected: true },
-      ];
-      const groups = buildConfiguredModelGroups({
-        services: renamedServices,
-        configuredServices: renamed,
-        activeService: "custom:C",
-      });
-      expect(groups.flatMap((group) => group.models.map((model) => model.id)))
-        .toEqual(["b1", "b2"]);
-      // The old identity is gone; it must not resurrect the old catalog.
-      expect(buildConfiguredModelGroups({
-        services: renamedServices,
-        configuredServices: renamed,
-        activeService: "custom:Zephyr",
-      })).toEqual([]);
+      ],
     });
 
-    it("T7: a stale cross-service model never survives as the selection", () => {
-      const faroGroups = buildConfiguredModelGroups({
-        services,
-        configuredServices,
-        activeService: "custom:FARO API",
-      });
-      // b1 belongs to Zephyr only; with FARO selected it must fall back to a
-      // valid FARO model before any request is built.
-      const next = pickModelSelection(faroGroups, "b1", "custom:FARO API", null);
-      expect(next).toEqual({ model: "a1", service: "custom:FARO API" });
+    expect(groups.map((group) => group.serviceId)).toEqual(["custom:A", "custom:C"]);
+    expect(groups.find((group) => group.serviceId === "custom:C")?.models.map((model) => model.id))
+      .toEqual(["b1", "b2"]);
+    expect(groups.some((group) => group.serviceId === "custom:B")).toBe(false);
+  });
+
+  it("T8: deleting a service removes its group even if a live catalog once contained it", () => {
+    const groups = buildConfiguredModelGroups({
+      services: [services[0]!],
+      configuredServices: [configuredServices[0]!],
     });
 
-    it("falls back to the first connected service that has configured models when none is selected", () => {
-      const groups = buildConfiguredModelGroups({
-        services,
-        configuredServices,
-        activeService: null,
-      });
-      expect(groups.map((group) => group.service)).toEqual(["custom:FARO API"]);
+    expect(groups.map((group) => group.serviceId)).toEqual(["custom:A"]);
+    expect(groups.some((group) => group.serviceId === "custom:B")).toBe(false);
+  });
+
+  it("T9: empty configured models do not get filled from live discovery", () => {
+    const groups = buildConfiguredModelGroups({
+      services: [services[0]!, services[1]!],
+      configuredServices: [
+        { service: "custom", name: "A", models: [] },
+        configuredServices[1]!,
+      ],
     });
 
-    it("returns no groups for a disconnected or unknown selected service", () => {
-      expect(buildConfiguredModelGroups({
-        services,
-        configuredServices,
-        activeService: "custom:Ghost",
-      })).toEqual([]);
-      expect(buildConfiguredModelGroups({
-        services: [services[0]!, { ...services[1]!, connected: false }],
-        configuredServices,
-        activeService: "custom:Zephyr",
-      })).toEqual([]);
+    expect(groups.map((group) => group.serviceId)).toEqual(["custom:B"]);
+    expect(groups.some((group) => group.serviceId === "custom:A")).toBe(false);
+  });
+
+  it("T10: excludes disconnected service summaries and keeps connected configured services", () => {
+    const groups = buildConfiguredModelGroups({
+      services: [
+        { ...services[0]!, connected: false },
+        services[1]!,
+        services[2]!,
+      ],
+      configuredServices,
     });
 
-    it("deduplicates configured model ids case-insensitively and preserves order", () => {
+    expect(groups.map((group) => group.serviceId)).toEqual(["custom:B", "custom:C"]);
+  });
+
+  it("deduplicates model ids only within each service group", () => {
+    const groups = buildConfiguredModelGroups({
+      services: [services[0]!, services[1]!],
+      configuredServices: [
+        { service: "custom", name: "A", models: ["shared-model", "SHARED-MODEL", "a2"] },
+        { service: "custom", name: "B", models: ["shared-model"] },
+      ],
+    });
+
+    expect(groups[0]?.models.map((model) => model.id)).toEqual(["shared-model", "a2"]);
+    expect(groups[1]?.models.map((model) => model.id)).toEqual(["shared-model"]);
+  });
+
+  describe("selection fallback stays inside the selected service", () => {
+    it("uses the persisted service/default model on first selection", () => {
+      const groups = buildConfiguredModelGroups({ services, configuredServices });
+      expect(pickModelSelection(groups, null, null, { service: "custom:B", model: "b2" }))
+        .toEqual({ model: "b2", service: "custom:B" });
+    });
+
+    it("falls back within A when the selected A model was deleted", () => {
       const groups = buildConfiguredModelGroups({
         services,
         configuredServices: [
-          { service: "custom", name: "FARO API", models: ["a1", "A1", "a2", " a1 "] },
+          { service: "custom", name: "A", models: ["a1"] },
+          configuredServices[1]!,
+          configuredServices[2]!,
         ],
-        activeService: "custom:FARO API",
       });
-      expect(groups[0]!.models.map((model) => model.id)).toEqual(["a1", "a2"]);
+      expect(pickModelSelection(groups, "a2", "custom:A", { service: "custom:A", model: "a2" }))
+        .toEqual({ model: "a1", service: "custom:A" });
+    });
+
+    it("does not keep a cross-service model under A", () => {
+      const groups = buildConfiguredModelGroups({ services, configuredServices });
+      expect(pickModelSelection(groups, "b1", "custom:A", null))
+        .toEqual({ model: "a1", service: "custom:A" });
     });
   });
 });

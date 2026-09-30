@@ -383,14 +383,15 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
       || (last.toolExecutions?.some(t => t.status === "running" || t.status === "processing") ?? false);
   }, [messages]);
 
-  // -- Model picker: the authoritative options are the selected service's
-  // configured model list (from /services/config); live/discovered catalogs
-  // (modelsByService) are never mixed into the chat picker. --
+  // -- Model picker: every connected service gets its own group of persisted
+  // configured models from /services/config; live/discovered catalogs are not
+  // used for chat options. --
   const services = useServiceStore((s) => s.services);
   const servicesLoading = useServiceStore((s) => s.servicesLoading);
   const fetchServices = useServiceStore((s) => s.fetchServices);
   const [serviceConfig, setServiceConfig] = useState<ServiceConfigPayload | null>(null);
   const [serviceConfigLoaded, setServiceConfigLoaded] = useState(false);
+  const selectionInitializedRef = useRef(false);
 
   useEffect(() => { void fetchServices(); }, [fetchServices]);
   useEffect(() => {
@@ -420,18 +421,15 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
     [serviceConfig],
   );
 
-  // The chat picker is scoped to the selected service only: switching services
-  // happens in the service config page (saving selects the service); the picker
-  // recomputes from the refreshed config on mount.
-  const activeService = selectedService ?? serviceConfig?.service ?? null;
-
+  // The picker contains every connected service's configured models. The
+  // persisted service/default model is used only during first initialization;
+  // a later user click is an explicit service/model pair and must stay put.
   const groupedModels = useMemo(
     () => buildConfiguredModelGroups({
       services,
       configuredServices: serviceConfig?.services ?? [],
-      activeService,
     }),
-    [services, serviceConfig, activeService],
+    [services, serviceConfig],
   );
 
   const modelPickerStatus = useMemo(() => {
@@ -442,37 +440,36 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
 
   const selectedModelLabel = useMemo(() => {
     if (!selectedModel) return isZh ? "选择模型" : "Select model";
-    const group = groupedModels.find((item) => item.service === selectedService);
+    const group = groupedModels.find((item) => item.serviceId === selectedService);
     const model = group?.models.find((item) => item.id === selectedModel);
     const modelLabel = model?.name ?? selectedModel;
-    return group ? `${group.label} · ${modelLabel}` : modelLabel;
+    return group ? `${group.serviceName} · ${modelLabel}` : modelLabel;
   }, [groupedModels, selectedModel, selectedService, isZh]);
 
-  // Auto-select from the selected service's configured models; stale or
-  // cross-service selections fall back inside the scoped group (never across
-  // services). When the selected service has no configured models left, clear
-  // the stale selection instead of silently sending it.
+  // Initialize from persisted service/default once. After that, selection
+  // changes come from the grouped picker and are already atomic. Refreshes
+  // that remove a model fall back within the current service.
   useEffect(() => {
-    if (!serviceConfigLoaded) return;
-    const nextSelection = pickModelSelection(
-      groupedModels,
-      selectedModel,
-      selectedService,
-      configuredModelSelection,
-    );
+    if (!serviceConfigLoaded || servicesLoading || services.length === 0) return;
+    if (!selectionInitializedRef.current) {
+      selectionInitializedRef.current = true;
+      const initialSelection = pickModelSelection(
+        groupedModels,
+        null,
+        null,
+        configuredModelSelection,
+      );
+      if (initialSelection) setSelectedModel(initialSelection.model, initialSelection.service);
+      return;
+    }
+
+    const nextSelection = pickModelSelection(groupedModels, selectedModel, selectedService, null);
     if (nextSelection) {
       setSelectedModel(nextSelection.model, nextSelection.service);
       return;
     }
-    if (
-      groupedModels.length === 0
-      && (selectedModel || selectedService)
-      && !servicesLoading
-      && services.some((s) => s.service === activeService && s.connected)
-    ) {
-      setSelectedModel(null, null);
-    }
-  }, [activeService, configuredModelSelection, groupedModels, selectedModel, selectedService, serviceConfigLoaded, services, servicesLoading, setSelectedModel]);
+    if (selectedModel || selectedService) setSelectedModel(null, null);
+  }, [configuredModelSelection, groupedModels, selectedModel, selectedService, serviceConfigLoaded, services, servicesLoading, setSelectedModel]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -1136,7 +1133,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                       groupedModels={groupedModels}
                       selectedModel={selectedModel}
                       selectedService={selectedService}
-                      onSelect={setSelectedModel}
+                      onSelect={(serviceId, modelId) => setSelectedModel(modelId, serviceId)}
                       onManage={() => nav.toServices()}
                     />
                   </DropdownMenu>
@@ -1240,10 +1237,10 @@ function ModelPickerContent({
   onSelect,
   onManage,
 }: {
-  groupedModels: ReadonlyArray<{ service: string; label: string; models: ReadonlyArray<{ id: string; name?: string }> }>;
+  groupedModels: ReadonlyArray<{ serviceId: string; serviceName: string; models: ReadonlyArray<{ id: string; name?: string }> }>;
   selectedModel: string | null;
   selectedService: string | null;
-  onSelect: (model: string, service: string) => void;
+  onSelect: (serviceId: string, modelId: string) => void;
   onManage: () => void;
 }) {
   const [search, setSearch] = useState("");
@@ -1264,16 +1261,16 @@ function ModelPickerContent({
       </div>
       <div className="overflow-y-auto flex-1">
         {filtered.map((group) => (
-          <div key={group.service}>
+          <div key={group.serviceId}>
             <div className="px-2 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-              {group.label}
+              {group.serviceName}
             </div>
             {group.models.map((m) => {
-              const isSelected = selectedModel === m.id && selectedService === group.service;
+              const isSelected = selectedModel === m.id && selectedService === group.serviceId;
               return (
                 <DropdownMenuItem
-                  key={`${group.service}:${m.id}`}
-                  onClick={() => onSelect(m.id, group.service)}
+                  key={`${group.serviceId}:${m.id}`}
+                  onClick={() => onSelect(group.serviceId, m.id)}
                   className={isSelected ? "bg-muted/50" : ""}
                 >
                   <div className="flex flex-1 items-center justify-between">

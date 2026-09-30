@@ -74,16 +74,16 @@ describe("book-create session localStorage helpers", () => {
 describe("filterModelGroups", () => {
   const grouped = [
     {
-      service: "openai",
-      label: "OpenAI",
+      serviceId: "openai",
+      serviceName: "OpenAI",
       models: [
         { id: "gpt-5.4", name: "gpt-5.4" },
         { id: "gpt-4o", name: "gpt-4o" },
       ],
     },
     {
-      service: "custom:gemma",
-      label: "LM Studio",
+      serviceId: "custom:gemma",
+      serviceName: "LM Studio",
       models: [
         { id: "google/gemma-4-27b-it", name: "google/gemma-4-27b-it" },
       ],
@@ -98,8 +98,8 @@ describe("filterModelGroups", () => {
   it("filters by model name and preserves only matching groups", () => {
     expect(filterModelGroups(grouped, "gemma")).toEqual([
       {
-        service: "custom:gemma",
-        label: "LM Studio",
+        serviceId: "custom:gemma",
+        serviceName: "LM Studio",
         models: [{ id: "google/gemma-4-27b-it", name: "google/gemma-4-27b-it" }],
       },
     ]);
@@ -108,8 +108,8 @@ describe("filterModelGroups", () => {
   it("filters by service label", () => {
     expect(filterModelGroups(grouped, "openai")).toEqual([
       {
-        service: "openai",
-        label: "OpenAI",
+        serviceId: "openai",
+        serviceName: "OpenAI",
         models: [
           { id: "gpt-5.4", name: "gpt-5.4" },
           { id: "gpt-4o", name: "gpt-4o" },
@@ -122,15 +122,15 @@ describe("filterModelGroups", () => {
 describe("pickModelSelection", () => {
   const grouped = [
     {
-      service: "google",
-      label: "Google Gemini",
+      serviceId: "google",
+      serviceName: "Google Gemini",
       models: [
         { id: "gemini-2.5-flash", name: "gemini-2.5-flash" },
       ],
     },
     {
-      service: "moonshot",
-      label: "Moonshot",
+      serviceId: "moonshot",
+      serviceName: "Moonshot",
       models: [
         { id: "kimi-k2.5", name: "kimi-k2.5" },
       ],

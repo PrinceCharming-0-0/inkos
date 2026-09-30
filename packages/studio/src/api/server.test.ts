@@ -7795,6 +7795,110 @@ describe("createStudioServer daemon lifecycle", () => {
       await expect(response.json()).resolves.toMatchObject({ response: "Agent response." });
     });
 
+    it("T5: routes a valid B/b2 pair without substituting service A", async () => {
+      await writeFile(join(root, "inkos.json"), JSON.stringify({
+        ...projectConfig,
+        llm: {
+          ...projectConfig.llm,
+          service: "custom:B",
+          services: [
+            { service: "custom", name: "A", baseUrl: "https://a.example/v1", models: ["a1"] },
+            { service: "custom", name: "B", baseUrl: "https://b.example/v1", models: ["b1", "b2"] },
+          ],
+        },
+      }, null, 2), "utf-8");
+      resolveServiceModelMock.mockResolvedValue({
+        model: { id: "b2", api: "openai-completions", provider: "openai", baseUrl: "https://b.example/v1" },
+        apiKey: "sk-b",
+      });
+
+      const { createStudioServer } = await import("./server.js");
+      const app = createStudioServer(cloneProjectConfig() as never, root);
+      const response = await app.request("http://localhost/api/v1/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instruction: "你好",
+          sessionId: "agent-session-b2",
+          service: "custom:B",
+          model: "b2",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(resolveServiceModelMock).toHaveBeenCalledWith(
+        "custom:B",
+        "b2",
+        expect.anything(),
+        "https://b.example/v1",
+        undefined,
+      );
+      expect(runAgentSessionMock).toHaveBeenCalled();
+    });
+
+    it("allows the same model id independently for two configured services", async () => {
+      await writeFile(join(root, "inkos.json"), JSON.stringify({
+        ...projectConfig,
+        llm: {
+          ...projectConfig.llm,
+          service: "custom:B",
+          services: [
+            { service: "custom", name: "A", baseUrl: "https://a.example/v1", models: ["shared"] },
+            { service: "custom", name: "B", baseUrl: "https://b.example/v1", models: ["shared"] },
+          ],
+        },
+      }, null, 2), "utf-8");
+      resolveServiceModelMock.mockResolvedValue({
+        model: { id: "shared", api: "openai-completions", provider: "openai", baseUrl: "https://b.example/v1" },
+        apiKey: "sk-b",
+      });
+
+      const { createStudioServer } = await import("./server.js");
+      const app = createStudioServer(cloneProjectConfig() as never, root);
+      const response = await app.request("http://localhost/api/v1/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instruction: "你好",
+          sessionId: "agent-session-shared-b",
+          service: "custom:B",
+          model: "shared",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(resolveServiceModelMock).toHaveBeenCalledWith(
+        "custom:B",
+        "shared",
+        expect.anything(),
+        "https://b.example/v1",
+        undefined,
+      );
+
+      resolveServiceModelMock.mockResolvedValue({
+        model: { id: "shared", api: "openai-completions", provider: "openai", baseUrl: "https://a.example/v1" },
+        apiKey: "sk-a",
+      });
+      const responseA = await app.request("http://localhost/api/v1/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instruction: "你好",
+          sessionId: "agent-session-shared-a",
+          service: "custom:A",
+          model: "shared",
+        }),
+      });
+      expect(responseA.status).toBe(200);
+      expect(resolveServiceModelMock).toHaveBeenCalledWith(
+        "custom:A",
+        "shared",
+        expect.anything(),
+        "https://a.example/v1",
+        undefined,
+      );
+    });
+
     it("does not reject when the service has no configured model list (legacy config)", async () => {
       await writeFile(join(root, "inkos.json"), JSON.stringify({
         ...projectConfig,

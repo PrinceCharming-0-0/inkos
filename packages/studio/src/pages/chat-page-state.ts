@@ -4,8 +4,8 @@ export interface ChatPageModelInfo {
 }
 
 export interface ChatPageModelGroup {
-  readonly service: string;
-  readonly label: string;
+  readonly serviceId: string;
+  readonly serviceName: string;
   readonly models: ReadonlyArray<ChatPageModelInfo>;
 }
 
@@ -36,42 +36,37 @@ export function chatServiceConfigKey(entry: {
 }
 
 /**
- * Authoritative chat picker options: the selected service's persisted
- * (configured) model list only. Live/discovered catalogs are never an input —
- * they belong to the service config page as "addable" suggestions. At most one
- * group is returned, scoped to `activeService` (or, when nothing is selected
- * yet, the first connected service that actually has configured models).
+ * Authoritative chat picker options: every eligible connected service's
+ * persisted configured model list. Live/discovered catalogs are never an
+ * input. Each group keeps its canonical service identity so duplicate model
+ * ids remain distinct pairs.
  */
 export function buildConfiguredModelGroups(args: {
   readonly services: ReadonlyArray<ChatPageServiceInfo>;
   readonly configuredServices: ReadonlyArray<ChatPageConfiguredServiceEntry>;
-  readonly activeService?: string | null;
 }): ChatPageModelGroup[] {
-  const modelsByKey = new Map<string, string[]>();
+  const configuredByKey = new Map<string, ChatPageConfiguredServiceEntry>();
   for (const entry of args.configuredServices) {
+    configuredByKey.set(chatServiceConfigKey(entry), entry);
+  }
+
+  return args.services.flatMap((service) => {
+    if (service.connected === false) return [];
+    const entry = configuredByKey.get(service.service);
+    if (!entry) return [];
+
     const seen = new Set<string>();
-    const models: string[] = [];
+    const models: ChatPageModelInfo[] = [];
     for (const raw of entry.models ?? []) {
       const id = typeof raw === "string" ? raw.trim() : "";
       const key = id.toLowerCase();
       if (!id || seen.has(key)) continue;
       seen.add(key);
-      models.push(id);
+      models.push({ id, name: id });
     }
-    modelsByKey.set(chatServiceConfigKey(entry), models);
-  }
-
-  const connected = args.services.filter((service) => service.connected !== false);
-  let target = args.activeService?.trim() || null;
-  if (!target) {
-    target = connected.find((service) => (modelsByKey.get(service.service)?.length ?? 0) > 0)?.service ?? null;
-  }
-  if (!target) return [];
-
-  const group = connected.find((service) => service.service === target);
-  const models = modelsByKey.get(target) ?? [];
-  if (!group || models.length === 0) return [];
-  return [{ service: group.service, label: group.label, models: models.map((id) => ({ id, name: id })) }];
+    if (models.length === 0) return [];
+    return [{ serviceId: service.service, serviceName: service.label, models }];
+  });
 }
 
 export interface ChatPageSessionSummary {
@@ -115,7 +110,7 @@ export function filterModelGroups(
       ...group,
       models: group.models.filter((model) =>
         (model.name ?? model.id).toLowerCase().includes(query)
-        || group.label.toLowerCase().includes(query),
+        || group.serviceName.toLowerCase().includes(query),
       ),
     }))
     .filter((group) => group.models.length > 0);
@@ -129,7 +124,7 @@ export function pickModelSelection(
 ): { model: string; service: string } | null {
   const selectedStillAvailable = selectedModel && selectedService
     ? groupedModels.some((group) =>
-        group.service === selectedService
+        group.serviceId === selectedService
         && group.models.some((model) => model.id === selectedModel),
       )
     : false;
@@ -138,30 +133,32 @@ export function pickModelSelection(
   const preferredService = preference?.service?.trim();
   const preferredModel = preference?.model?.trim();
   if (preferredService) {
-    const preferredGroup = groupedModels.find((group) => group.service === preferredService);
+    const preferredGroup = groupedModels.find((group) => group.serviceId === preferredService);
     const exactModel = preferredModel
       ? preferredGroup?.models.find((model) => model.id === preferredModel)
       : undefined;
     if (preferredGroup && exactModel) {
-      return { model: exactModel.id, service: preferredGroup.service };
+      return { model: exactModel.id, service: preferredGroup.serviceId };
     }
     const firstPreferredModel = preferredGroup?.models[0];
     if (preferredGroup && firstPreferredModel) {
-      return { model: firstPreferredModel.id, service: preferredGroup.service };
+      return { model: firstPreferredModel.id, service: preferredGroup.serviceId };
     }
   }
 
-  if (preferredModel) {
-    for (const group of groupedModels) {
-      const exactModel = group.models.find((model) => model.id === preferredModel);
-      if (exactModel) return { model: exactModel.id, service: group.service };
+  if (selectedService) {
+    const selectedGroup = groupedModels.find((group) => group.serviceId === selectedService);
+    const firstSelectedModel = selectedGroup?.models[0];
+    if (selectedGroup && firstSelectedModel) {
+      return { model: firstSelectedModel.id, service: selectedGroup.serviceId };
     }
+    return null;
   }
 
   const firstGroup = groupedModels.find((group) => group.models.length > 0);
   const firstModel = firstGroup?.models[0];
   if (!firstGroup || !firstModel) return null;
-  return { model: firstModel.id, service: firstGroup.service };
+  return { model: firstModel.id, service: firstGroup.serviceId };
 }
 
 export function pickProjectChatSessionId(

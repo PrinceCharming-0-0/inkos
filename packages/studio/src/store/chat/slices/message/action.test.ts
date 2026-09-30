@@ -58,6 +58,17 @@ describe("chat message actions", () => {
     (globalThis as any).EventSource = originalEventSource;
   });
 
+  it("sets the selected chat model and service as one pair", () => {
+    const store = createTestStore();
+
+    store.getState().setSelectedModel("b2", "custom:B");
+
+    expect(store.getState()).toMatchObject({
+      selectedModel: "b2",
+      selectedService: "custom:B",
+    });
+  });
+
   it("aborts only the previous chat round when activating another session", async () => {
     const store = createTestStore();
     const previousId = store.getState().createDraftSession(null, "chat");
