@@ -55,7 +55,7 @@ import {
   getBookCreateSessionId,
   getProjectChatSessionId,
   pickProjectChatSessionId,
-  pickModelSelection,
+  resolveSelectionSync,
   setBookCreateSessionId,
   setProjectChatSessionId,
   isChatScrollNearBottom,
@@ -391,7 +391,6 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
   const fetchServices = useServiceStore((s) => s.fetchServices);
   const [serviceConfig, setServiceConfig] = useState<ServiceConfigPayload | null>(null);
   const [serviceConfigLoaded, setServiceConfigLoaded] = useState(false);
-  const selectionInitializedRef = useRef(false);
 
   useEffect(() => { void fetchServices(); }, [fetchServices]);
   useEffect(() => {
@@ -446,29 +445,19 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
     return group ? `${group.serviceName} · ${modelLabel}` : modelLabel;
   }, [groupedModels, selectedModel, selectedService, isZh]);
 
-  // Initialize from persisted service/default once. After that, selection
-  // changes come from the grouped picker and are already atomic. Refreshes
-  // that remove a model fall back within the current service.
+  // Selection synchronization is idempotent: a valid {service, model} pair is
+  // a no-op, and writes happen only when the primitive pair changes. The
+  // persisted service/default model acts as the fallback for stale selections
+  // (deleted model, renamed service, empty config).
   useEffect(() => {
     if (!serviceConfigLoaded || servicesLoading || services.length === 0) return;
-    if (!selectionInitializedRef.current) {
-      selectionInitializedRef.current = true;
-      const initialSelection = pickModelSelection(
-        groupedModels,
-        null,
-        null,
-        configuredModelSelection,
-      );
-      if (initialSelection) setSelectedModel(initialSelection.model, initialSelection.service);
-      return;
-    }
-
-    const nextSelection = pickModelSelection(groupedModels, selectedModel, selectedService, null);
-    if (nextSelection) {
-      setSelectedModel(nextSelection.model, nextSelection.service);
-      return;
-    }
-    if (selectedModel || selectedService) setSelectedModel(null, null);
+    const sync = resolveSelectionSync(
+      groupedModels,
+      selectedModel,
+      selectedService,
+      configuredModelSelection,
+    );
+    if (sync.kind === "set") setSelectedModel(sync.model, sync.service);
   }, [configuredModelSelection, groupedModels, selectedModel, selectedService, serviceConfigLoaded, services, servicesLoading, setSelectedModel]);
 
   // Auto-resize textarea

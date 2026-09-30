@@ -69,6 +69,41 @@ export function buildConfiguredModelGroups(args: {
   });
 }
 
+export type ChatSelectionSync =
+  | { readonly kind: "noop" }
+  | { readonly kind: "set"; readonly model: string | null; readonly service: string | null };
+
+/**
+ * Idempotent selection synchronization for the ChatPage effect.
+ *
+ * Invariant: when the store already holds a valid {service, model} pair, the
+ * result is a no-op — zero state writes. Writes are emitted only when the
+ * primitive pair (serviceId, modelId) actually changes, so replaying this
+ * transition always terminates regardless of how often the effect re-runs.
+ */
+export function resolveSelectionSync(
+  groupedModels: ReadonlyArray<ChatPageModelGroup>,
+  selectedModel: string | null,
+  selectedService: string | null,
+  preference?: ChatPageModelPreference | null,
+): ChatSelectionSync {
+  const currentValid = Boolean(
+    selectedModel
+    && selectedService
+    && groupedModels.some((group) =>
+      group.serviceId === selectedService
+      && group.models.some((model) => model.id === selectedModel),
+    ),
+  );
+  if (currentValid) return { kind: "noop" };
+
+  const nextSelection = pickModelSelection(groupedModels, selectedModel, selectedService, preference);
+  const nextModel = nextSelection?.model ?? null;
+  const nextService = nextSelection?.service ?? null;
+  if (nextModel === selectedModel && nextService === selectedService) return { kind: "noop" };
+  return { kind: "set", model: nextModel, service: nextService };
+}
+
 export interface ChatPageSessionSummary {
   readonly sessionId: string;
   readonly sessionKind?: string;
