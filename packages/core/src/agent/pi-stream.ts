@@ -1,3 +1,5 @@
+import { withReasoningEffort, type ReasoningEffort } from "../llm/reasoning-effort.js";
+import { piApiToApiFormat } from "../llm/api-format-authority.js";
 import { streamSimple } from "@mariozechner/pi-ai";
 import type {
   Api,
@@ -25,7 +27,11 @@ export function guardedPiStream<TApi extends Api>(
   model: Model<TApi>,
   context: Context,
   options?: SimpleStreamOptions,
+  reasoningEffort?: ReasoningEffort,
 ): AssistantMessageEventStream {
+  // Only Chat supplies the optional snapshot; workers remain unchanged.
+  const streamOptions = reasoningEffort === undefined ? options
+    : withReasoningEffort(options, piApiToApiFormat(model.api), reasoningEffort);
   const reservedOutputTokens = Number.isFinite(options?.maxTokens)
     ? options!.maxTokens!
     : Number.isFinite(model.maxTokens)
@@ -39,13 +45,13 @@ export function guardedPiStream<TApi extends Api>(
   });
   const modelCall = beginAgentModelCall();
   const traceHeaders = agentTrajectoryHeaders(model.baseUrl, modelCall, 1, {
-    effort: String(options?.reasoning ?? (model.reasoning ? "enabled" : "disabled")),
+    effort: String(reasoningEffort ?? options?.reasoning ?? (model.reasoning ? "enabled" : "disabled")),
   });
   return guardAssistantMessageStream(
     model,
     (signal) => streamSimple(model, context, {
-      ...options,
-      headers: { ...(options?.headers ?? {}), ...traceHeaders },
+      ...streamOptions,
+      headers: { ...(streamOptions?.headers ?? {}), ...traceHeaders },
       signal,
     }),
     options?.signal,

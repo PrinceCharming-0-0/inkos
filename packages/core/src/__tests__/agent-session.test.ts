@@ -75,7 +75,7 @@ vi.mock("@mariozechner/pi-ai", async () => {
   }
 
   const streamSimple = vi.fn((model: any, context: any, options: any) => {
-    streamCalls.push({ model: clone(model), context: clone(context), options: clone(options) });
+    streamCalls.push({ model: clone(model), context: clone(context), options: { ...options } });
     const stream = actual.createAssistantMessageEventStream();
     const last = context.messages.at(-1);
     const prompt = lastVisibleUserText(context.messages);
@@ -276,6 +276,8 @@ describe("runAgentSession cache — bookId switch", () => {
   });
 
   afterEach(async () => {
+    evictAgentCache("reasoning-session");
+    evictAgentCache("reasoning-multi");
     evictAgentCache("s1");
     evictAgentCache("s-cache-seq");
     evictAgentCache("s-error");
@@ -416,6 +418,37 @@ describe("runAgentSession cache — bookId switch", () => {
     );
 
     expect(agentInstances).toHaveLength(1);
+  });
+  it("uses a fresh reasoning effort snapshot for each cached-agent turn", async () => {
+    const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
+    const pipeline = {} as any;
+
+    await runAgentSession(
+      { sessionId: "reasoning-session", bookId: "book-a", language: "zh", pipeline, projectRoot, model, reasoningEffort: "low" },
+      "first",
+    );
+    await runAgentSession(
+      { sessionId: "reasoning-session", bookId: "book-a", language: "zh", pipeline, projectRoot, model, reasoningEffort: "max" },
+      "second",
+    );
+
+    expect(agentInstances).toHaveLength(1);
+    expect(JSON.stringify(streamCalls.at(-1)?.context.messages)).toContain("first");
+    expect(streamCalls.map((call) => call.options.reasoning)).toEqual(["low", undefined]);
+    expect(streamCalls.at(-1)?.options.onPayload).toEqual(expect.any(Function));
+  });
+
+  it("uses one reasoning snapshot for multiple model calls in one Agent turn", async () => {
+    const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
+    const pipeline = {} as any;
+
+    await runAgentSession(
+      { sessionId: "reasoning-multi", bookId: "book-a", language: "zh", pipeline, projectRoot, model, reasoningEffort: "high" },
+      "use tool",
+    );
+
+    expect(streamCalls).toHaveLength(2);
+    expect(streamCalls.every((call) => call.options.reasoning === "high")).toBe(true);
   });
 
   it("injects backgroundTaskContext into the system prompt and rebuilds when it changes", async () => {

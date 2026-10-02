@@ -86,6 +86,7 @@ import {
   type ActivatedSkillGuidance,
 } from "./skill-tool.js";
 import { opaqueConversationId, runWithAgentTrajectory } from "../llm/agent-trajectory.js";
+import type { ReasoningEffort } from "../llm/reasoning-effort.js";
 import { guardedPiStream } from "./pi-stream.js";
 
 // ---------------------------------------------------------------------------
@@ -119,6 +120,8 @@ export interface AgentSessionConfig {
   projectRoot: string;
   /** pi-ai Model to use, or provider+modelId to resolve via getModel. */
   model: Model<Api> | { provider: string; modelId: string };
+  /** Per-generation snapshot. Deliberately excluded from Agent cache identity. */
+  reasoningEffort?: ReasoningEffort;
   /** Optional API key. When omitted, falls back to env-based key lookup. */
   apiKey?: string;
   /** Allow the read tool to read absolute paths outside projectRoot/books. Defaults to false; set INKOS_AGENT_ALLOW_SYSTEM_READ=1 to enable. */
@@ -192,6 +195,8 @@ interface CachedAgent {
   backgroundTaskContext: string | undefined;
   suppressProductionTools: boolean;
   currentAttachmentPaths: string[];
+  /** Set only inside the session queue during prompt; never part of cache identity. */
+  currentGeneration?: Readonly<{ reasoningEffort?: ReasoningEffort }>;
   lastCommittedSeq: number;
   lastActive: number;
 }
@@ -1024,8 +1029,9 @@ export async function runAgentSession(
   userMessage: string,
   initialMessages?: Array<{ role: string; content: string }>,
 ): Promise<AgentSessionResult> {
+  const turnConfig = { ...config, reasoningEffort: config.reasoningEffort };
   return runInAgentSessionQueue(config.projectRoot, config.sessionId, () =>
-    runAgentSessionUnlocked(config, userMessage, initialMessages)
+    runAgentSessionUnlocked(turnConfig, userMessage, initialMessages)
   );
 }
 
@@ -1208,7 +1214,7 @@ async function runAgentSessionUnlocked(
           return localAssistantStopStream(streamModel);
         }
         if (isLlmStubEnabled()) return stubAgentStream(streamModel, context);
-        return guardedPiStream(streamModel, context, options);
+        return guardedPiStream(streamModel, context, options, cached?.currentGeneration?.reasoningEffort);
       },
       getApiKey: (provider: string) => {
         if (config.apiKey) return config.apiKey;
@@ -1325,6 +1331,7 @@ async function runAgentSessionUnlocked(
   const turnMessageStartIndex = agent.state.messages.length;
 
   try {
+    cached.currentGeneration = Object.freeze({ reasoningEffort: config.reasoningEffort });
     await runWithAgentTrajectory({
       conversationId: opaqueConversationId(sessionId),
       runId: requestId,
@@ -1381,6 +1388,7 @@ async function runAgentSessionUnlocked(
     agentCache.delete(cacheKey);
     throw error;
   } finally {
+    cached.currentGeneration = undefined;
     unsubscribe();
   }
 

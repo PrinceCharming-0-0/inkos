@@ -4,6 +4,7 @@ import type { ChatStore } from "../../types";
 import { initialChatState } from "../../initialState";
 import { createCreateSlice } from "../create/action";
 import { createMessageSlice } from "./action";
+import { chatSelectors } from "../../selectors";
 
 const { fetchJson } = vi.hoisted(() => ({
   fetchJson: vi.fn(),
@@ -56,6 +57,106 @@ describe("chat message actions", () => {
 
   afterEach(() => {
     (globalThis as any).EventSource = originalEventSource;
+  });
+
+  it("keeps per-session effort in memory without selection or config side effects", () => {
+    const store = createTestStore();
+    const a = store.getState().createDraftSession(null);
+    const b = store.getState().createDraftSession(null);
+    expect(store.getState().sessions[a]?.reasoningEffort).toBe("medium");
+    expect(store.getState().sessions[b]?.reasoningEffort).toBe("medium");
+    store.getState().setSelectedModel("model-a", "service-a");
+    store.getState().setSessionReasoningEffort(a, "max");
+    expect(store.getState()).toMatchObject({ selectedModel: "model-a", selectedService: "service-a" });
+    store.getState().setSelectedModel("model-b", "service-b");
+    store.getState().activateSession(a);
+    expect(store.getState().sessions[a]?.reasoningEffort).toBe("max");
+    store.getState().activateSession(b);
+    expect(store.getState().sessions[b]?.reasoningEffort).toBe("medium");
+    expect(fetchJson).not.toHaveBeenCalled();
+    const reloaded = createTestStore();
+    const fresh = reloaded.getState().createDraftSession(null);
+    expect(reloaded.getState().sessions[fresh]?.reasoningEffort).toBe("medium");
+  });
+
+  it("snapshots before draft persistence await, preserves caller options, and retries original effort", async () => {
+    const store = createTestStore();
+    const id = store.getState().createDraftSession(null);
+    store.getState().setSelectedModel("model", "service");
+    store.getState().setSessionReasoningEffort(id, "low");
+    let persist!: (value: unknown) => void;
+    let fail!: (error: Error) => void;
+    fetchJson.mockImplementationOnce(() => new Promise((resolve) => { persist = resolve; }))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }))
+      .mockResolvedValueOnce({ response: "ok" });
+    const options = Object.freeze({ requestedSkills: ["style-guard"] });
+    const sent = store.getState().sendMessage(id, "hello", options);
+    store.getState().setSessionReasoningEffort(id, "high");
+    persist({ session: { sessionId: id } });
+    await vi.waitFor(() => expect(fetchJson.mock.calls.filter(([path]) => path === "/agent")).toHaveLength(1));
+    store.getState().setSessionReasoningEffort(id, "none");
+    fail(new Error("provider rejected effort"));
+    await sent;
+    expect(options).toEqual({ requestedSkills: ["style-guard"] });
+    expect(store.getState().sessions[id]?.lastFailedSend?.options?.reasoningEffort).toBe("low");
+    await store.getState().retryLastSend(id);
+    const bodies = fetchJson.mock.calls.filter(([path]) => path === "/agent")
+      .map(([, init]) => JSON.parse(init.body));
+    expect(bodies.map((body) => body.reasoningEffort)).toEqual(["low", "low"]);
+    expect(store.getState().sessions[id]?.reasoningEffort).toBe("none");
+  });
+
+  it("explicit send snapshot wins over session changes during persistence and generation", async () => {
+    const store = createTestStore();
+    const id = store.getState().createDraftSession(null);
+    store.getState().setSelectedModel("model", "service");
+    store.getState().setSessionReasoningEffort(id, "low");
+    let persist!: (value: unknown) => void;
+    let finish!: (value: unknown) => void;
+    fetchJson.mockImplementationOnce(() => new Promise((resolve) => { persist = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
+      .mockResolvedValueOnce({ response: "next" });
+    const sent = store.getState().sendMessage(id, "hello", { reasoningEffort: "xhigh" });
+    store.getState().setSessionReasoningEffort(id, "max");
+    persist({ session: { sessionId: id } });
+    await vi.waitFor(() => expect(fetchJson.mock.calls.filter(([path]) => path === "/agent")).toHaveLength(1));
+    store.getState().setSessionReasoningEffort(id, "none");
+    finish({ response: "ok" });
+    await sent;
+    await store.getState().sendMessage(id, "next");
+    const bodies = fetchJson.mock.calls.filter(([path]) => path === "/agent").map(([, init]) => JSON.parse(init.body));
+    expect(bodies.map((body) => body.reasoningEffort)).toEqual(["xhigh", "none"]);
+  });
+
+  it("accepts every stop including None and Max, and drops same-value writes", () => {
+    const store = createTestStore();
+    const id = store.getState().createDraftSession(null);
+    store.getState().activateSession(id);
+    const notify = vi.fn();
+    const unsubscribe = store.subscribe(notify);
+    for (const effort of ["none", "low", "medium", "high", "xhigh", "max"] as const) {
+      store.getState().setSessionReasoningEffort(id, effort);
+      expect(chatSelectors.activeSessionReasoningEffort(store.getState())).toBe(effort);
+    }
+    expect(notify).toHaveBeenCalledTimes(6);
+    const sessions = store.getState().sessions;
+    for (let i = 0; i < 50; i += 1) store.getState().setSessionReasoningEffort(id, "max");
+    expect(notify).toHaveBeenCalledTimes(6);
+    expect(store.getState().sessions).toBe(sessions);
+    store.getState().setSessionReasoningEffort("missing-session", "none");
+    expect(notify).toHaveBeenCalledTimes(6);
+    unsubscribe();
+  });
+
+  it("keeps the active session effort across service/model switches", () => {
+    const store = createTestStore();
+    const id = store.getState().createDraftSession(null);
+    store.getState().activateSession(id);
+    store.getState().setSessionReasoningEffort(id, "xhigh");
+    store.getState().setSelectedModel("m1", "svc-a");
+    store.getState().setSelectedModel("m2", "svc-b");
+    store.getState().setSelectedModel(null, null);
+    expect(chatSelectors.activeSessionReasoningEffort(store.getState())).toBe("xhigh");
   });
 
   it("sets the selected chat model and service as one pair", () => {
@@ -606,6 +707,22 @@ describe("chat message actions", () => {
       .flatMap((message) => message.toolExecutions ?? [])
       .find((execution) => execution.id === "direct-short_run-1");
   }
+
+  it("does not lose a reply when the user message timestamp coincides with the stream timestamp", async () => {
+    const store = createTestStore();
+    const sessionId = await setupRunningTaskSession(store);
+    fetchJson.mockResolvedValueOnce({ response: "任务还在跑。", session: { sessionId, sessionKind: "short" } });
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_001).mockReturnValueOnce(1_000_000);
+    try {
+      await store.getState().sendMessage(sessionId, "写得怎么样了？", { reasoningEffort: "max" });
+      const messages = store.getState().sessions[sessionId]!.messages;
+      expect(messages.find((message) => message.role === "user")?.timestamp).toBe(1_000_001);
+      expect(messages.at(-1)).toMatchObject({ role: "assistant", content: "任务还在跑。" });
+      expect(store.getState().sessions[sessionId]?.lastFailedSend).toBeUndefined();
+    } finally {
+      now.mockRestore();
+    }
+  });
 
   it("sends a chat message while a production task is running without aborting the task", async () => {
     const store = createTestStore();
@@ -1288,7 +1405,7 @@ describe("chat message actions", () => {
     expect(store.getState().sessions[sessionId]?.lastError).toBe("Request timed out");
     expect(store.getState().sessions[sessionId]?.lastFailedSend).toEqual({
       text: "写下一章",
-      options: { sessionKind: "book", requestedSkills: ["style-guard"] },
+      options: { sessionKind: "book", requestedSkills: ["style-guard"], reasoningEffort: "medium" },
     });
   });
 
@@ -1305,7 +1422,7 @@ describe("chat message actions", () => {
 
     await store.getState().sendMessage(sessionId, "你好");
 
-    expect(store.getState().sessions[sessionId]?.lastFailedSend).toEqual({ text: "你好" });
+    expect(store.getState().sessions[sessionId]?.lastFailedSend).toEqual({ text: "你好", options: { reasoningEffort: "medium" } });
   });
 
   it("retries the last failed send with identical business parameters and a fresh request id", async () => {

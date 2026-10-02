@@ -13,6 +13,8 @@ import type {
   AssistantMessageEventStream,
 } from "@mariozechner/pi-ai";
 import { resolveServicePreset } from "./service-presets.js";
+import { resolveApiFormatAuthority, piApiToApiFormat } from "./api-format-authority.js";
+import { withReasoningEffort, type ReasoningEffort, type ReasoningPayloadCallback } from "./reasoning-effort.js";
 import { getEndpoint } from "./providers/index.js";
 import { lookupModel } from "./providers/lookup.js";
 import { fetchWithProxy } from "../utils/proxy-fetch.js";
@@ -319,7 +321,12 @@ export function createLLMClient(config: LLMConfig): LLMClient {
   const inkosProvider = getEndpoint(serviceName);
   const modelCard = lookupModel(serviceName, config.model);
 
-  const piApi = resolvePiApi(serviceName, config.apiFormat, (inkosProvider?.api ?? preset?.api) as PiApi) as PiApi;
+  const piApi = resolvePiApi(
+    serviceName,
+    config.apiFormat,
+    config.apiFormatExplicit,
+    (inkosProvider?.api ?? preset?.api) as PiApi,
+  ) as PiApi;
   const baseUrl = config.baseUrl || inkosProvider?.baseUrl || preset?.baseUrl || "";
   const extraHeaders = sanitizeHttpHeaders(config.headers ?? parseEnvHeaders());
   const compat = piApi === "openai-completions"
@@ -375,24 +382,18 @@ export function createLLMClient(config: LLMConfig): LLMClient {
 function resolvePiApi(
   serviceName: string,
   apiFormat: LLMConfig["apiFormat"] | undefined,
+  apiFormatExplicit: boolean | undefined,
   presetApi: PiApi | undefined,
 ): PiApi {
-  if (serviceName === "custom") {
-    switch (apiFormat) {
-      case "responses":
-        return "openai-responses";
-      case "anthropic":
-        return "anthropic-messages";
-      case "chat":
-        return "openai-completions";
-      case undefined:
-        return "openai-completions";
-      default:
-        apiFormat satisfies never;
-        return "openai-completions";
-    }
-  }
-  return (presetApi ?? "openai-completions") as PiApi;
+  // 统一的 authority rule：custom 服务始终以 apiFormat 为准；
+  // 非 custom 服务只有在用户显式配置 apiFormat 时才覆盖 preset/endpoint api。
+  return resolveApiFormatAuthority({
+    isCustom: serviceName === "custom",
+    explicitApiFormat: serviceName === "custom"
+      ? (apiFormat ?? "chat")
+      : (apiFormatExplicit ? apiFormat : undefined),
+    presetApi,
+  }) as PiApi;
 }
 
 function resolveProviderCompat(
@@ -1461,6 +1462,16 @@ export async function chatCompletion(
     // Diagnostics / connectivity checks want a fast pass-or-fail — set false to
     // skip the transient 502/503/429 retry+backoff (e.g. the doctor probe).
     readonly retry?: boolean;
+    /**
+     * 六态 reasoning effort（Phase 2 per-call 接入；未传则完全不影响现有行为）。
+     * 不进入模型选择 / 缓存 key / 服务身份。
+     */
+    readonly reasoningEffort?: ReasoningEffort;
+    /**
+     * 旧 onPayload callback：在 pi-ai 构造 payload 后、InkOS transformer 之前执行。
+     * 原地修改保留；返回新对象生效；返回 undefined 表示未替换；异步会被 await。
+     */
+    readonly onPayload?: ReasoningPayloadCallback;
   },
 ): Promise<LLMResponse> {
   if (isLlmStubEnabled()) return Promise.resolve(stubChatCompletion(messages, model));
@@ -1536,6 +1547,7 @@ export async function chatCompletion(
             deadline?.signal ?? signal,
             traceHeaders,
             deadline?.activity,
+            { reasoningEffort: options?.reasoningEffort, onPayload: options?.onPayload },
           );
         } catch (error) {
           throw deadline?.timeoutError() ?? error;
@@ -1604,16 +1616,30 @@ async function chatCompletionViaPiAi(
   signal?: AbortSignal,
   traceHeaders: Record<string, string> = {},
   onStreamActivity?: () => void,
+  reasoningHooks?: {
+    readonly reasoningEffort?: ReasoningEffort;
+    readonly onPayload?: ReasoningPayloadCallback;
+  },
 ): Promise<LLMResponse> {
   const piModel = resolvePiModel(client, model);
   const context = toPiContext(messages);
-  const streamOpts = {
+  // Reasoning effort 边界：
+  // - low/medium/high/xhigh 是 pi-ai ThinkingLevel，作为 simple reasoning option
+  //   交给 pi-ai 生成实际 payload（含 xhigh 映射）；
+  // - none/max 是 InkOS 扩展值，不是合法 ThinkingLevel，绝不传给 pi-ai，
+  //   只通过 onPayload transformer 在最终 payload 里原值写入；
+  // - 未配置 effort 时完全不影响现有行为。
+  const effort = reasoningHooks?.reasoningEffort;
+  const baseStreamOpts = {
     temperature: resolved.temperature,
     maxTokens: resolved.maxTokens,
     apiKey: client._apiKey,
     headers: mergeUserAgent({ ...(piModel.headers ?? {}), ...traceHeaders }),
     signal,
+    onPayload: reasoningHooks?.onPayload,
   };
+  const streamOpts = effort === undefined ? baseStreamOpts
+    : withReasoningEffort(baseStreamOpts, piApiToApiFormat(piModel.api), effort)!;
 
   if (!client.stream) {
     const response = await piCompleteSimple(piModel, context, streamOpts);

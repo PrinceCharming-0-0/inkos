@@ -25,6 +25,7 @@ import {
   SessionAlreadyMigratedError,
   abortAgentSession,
   runAgentSession,
+  normalizeReasoningEffort,
   resolveServicePreset,
   resolveServiceProviderFamily,
   resolveServiceModelsBaseUrl,
@@ -2556,6 +2557,7 @@ async function probeServiceCapabilities(args: {
         proxyUrl: args.proxyUrl,
         apiFormat: plan.apiFormat,
         stream: plan.stream,
+        ...(args.preferredApiFormat !== undefined ? { apiFormatExplicit: true } : {}),
       } as ProjectConfig["llm"]);
 
       try {
@@ -4731,6 +4733,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       playMode: reqPlayMode,
       model: reqModel,
       service: reqService,
+      reasoningEffort: reqReasoningEffort,
     } = await c.req.json<{
       instruction: string;
       activeBookId?: string;
@@ -4746,7 +4749,12 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       playMode?: string;
       model?: string;
       service?: string;
+      reasoningEffort?: unknown;
     }>();
+    const reasoningEffort = normalizeReasoningEffort(reqReasoningEffort);
+    if (reqReasoningEffort !== undefined && reasoningEffort === undefined) {
+      throw new ApiError(400, "INVALID_REASONING_EFFORT", "reasoningEffort must be none | low | medium | high | xhigh | max");
+    }
     const sessionId = reqSessionId;
     if (!instruction?.trim()) {
       return c.json({ error: "No instruction provided" }, 400);
@@ -4962,7 +4970,9 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
             service: configuredEntry?.service ?? reqService,
             model: reqModel,
             apiKey: resolvedApiKey ?? "",
-            ...(configuredEntry?.apiFormat ? { apiFormat: configuredEntry.apiFormat } : {}),
+            ...(configuredEntry?.apiFormat
+              ? { apiFormat: configuredEntry.apiFormat, apiFormatExplicit: true }
+              : { apiFormatExplicit: false }),
             ...(configuredEntry?.stream !== undefined ? { stream: configuredEntry.stream } : {}),
             baseUrl: configuredEntry?.baseUrl ?? "",
           } as any)
@@ -5175,6 +5185,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         {
           model,
           apiKey: agentApiKey,
+          reasoningEffort,
           pipeline,
           ...(backgroundTask
             ? {

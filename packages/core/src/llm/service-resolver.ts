@@ -2,6 +2,7 @@ import { getModel } from "@mariozechner/pi-ai";
 import type { ApiFormat } from "../models/project.js";
 import type { Model, Api } from "@mariozechner/pi-ai";
 import { resolveServicePiProvider, resolveServicePreset } from "./service-presets.js";
+import { resolveApiFormatAuthority } from "./api-format-authority.js";
 import { getServiceApiKey } from "./secrets.js";
 import { getEndpoint } from "./providers/index.js";
 import type { InkosEndpoint } from "./providers/types.js";
@@ -37,18 +38,16 @@ export async function resolveServiceModel(
   const baseService = service.startsWith("custom:") ? "custom" : service;
   const preset = resolveServicePreset(baseService);
   const endpoint = getEndpoint(baseService);
-  const piProvider = service.startsWith("custom:") && customApiFormat === "anthropic"
+  const piProvider = customApiFormat === "anthropic"
     ? "anthropic"
     : baseService === "ollama"
       ? "ollama"
       : resolveServicePiProvider(baseService) ?? "openai";
-  const apiType = service.startsWith("custom:")
-    ? (customApiFormat === "responses"
-        ? "openai-responses"
-        : customApiFormat === "anthropic"
-          ? "anthropic-messages"
-          : "openai-completions")
-    : (preset?.api ?? "openai-completions");
+  const apiType = resolveApiFormatAuthority({
+    isCustom: service.startsWith("custom:"),
+    explicitApiFormat: customApiFormat,
+    presetApi: preset?.api,
+  });
   const configuredBaseUrl = customBaseUrl ?? preset?.baseUrl ?? "";
   const endpointModel = baseService === "minimax"
     ? endpoint?.models.find((model) => model.id === modelId || model.deploymentName === modelId)

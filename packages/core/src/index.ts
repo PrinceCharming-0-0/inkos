@@ -494,6 +494,15 @@ export {
   type ModelInfo,
 } from "./llm/service-presets.js";
 export { resolveServiceModel, type ResolvedModel } from "./llm/service-resolver.js";
+export {
+  REASONING_EFFORTS,
+  normalizeReasoningEffort,
+  applyReasoningEffortToPayload,
+  composeReasoningOnPayload,
+  type ReasoningEffort,
+  type ReasoningPayloadCallback,
+} from "./llm/reasoning-effort.js";
+export { apiFormatToPiApi, resolveApiFormatAuthority } from "./llm/api-format-authority.js";
 export { loadSecrets, saveSecrets, getServiceApiKey, type SecretsFile } from "./llm/secrets.js";
 export {
   COVER_PROVIDER_PRESETS,

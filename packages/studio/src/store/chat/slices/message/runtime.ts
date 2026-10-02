@@ -192,6 +192,7 @@ export function createSessionRuntime(input: {
   isDraft?: boolean;
 }): SessionRuntime {
   return {
+    reasoningEffort: "medium",
     sessionId: input.sessionId,
     bookId: input.bookId,
     sessionKind: input.sessionKind,

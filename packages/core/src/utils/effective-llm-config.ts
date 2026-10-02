@@ -71,6 +71,10 @@ export async function resolveEffectiveLLMConfig(
 ): Promise<EffectiveLLMConfigResult> {
   const config = await readProjectConfig(input.projectRoot);
   const llm = { ...((config.llm ?? {}) as Record<string, unknown>) };
+  // 旧格式项目顶层 llm.apiFormat 也算用户显式配置（studio/cli-project 模式下
+  // 会被 applyServiceEntry 重写，legacy-env 模式下则以此为准）。
+  const topLevelApiFormat = normalizeApiFormat(llm.apiFormat);
+  if (topLevelApiFormat) llm.apiFormatExplicit = true;
   const services = normalizeServiceEntries(llm.services);
   const configMode = resolveConfigMode(input.consumer, llm.configSource, services);
   const diagnostics: MutableDiagnostics = {
@@ -200,7 +204,10 @@ async function applyProjectServiceConfig(
     applyCommonEnv(config, llm, options.env);
   }
   if (options.cli?.baseUrl) llm.baseUrl = options.cli.baseUrl;
-  if (options.cli?.apiFormat) llm.apiFormat = options.cli.apiFormat;
+  if (options.cli?.apiFormat) {
+    llm.apiFormat = options.cli.apiFormat;
+    llm.apiFormatExplicit = true;
+  }
   if (options.cli?.stream !== undefined) llm.stream = options.cli.stream;
 
   const serviceKey = selectedEntry ? serviceEntryKey(selectedEntry) : stringValue(llm.service);
@@ -299,7 +306,10 @@ async function applyLegacyEnvConfig(
     diagnostics.modelSource = "cli";
   }
   if (input.cli?.baseUrl) llm.baseUrl = input.cli.baseUrl;
-  if (input.cli?.apiFormat) llm.apiFormat = input.cli.apiFormat;
+  if (input.cli?.apiFormat) {
+    llm.apiFormat = input.cli.apiFormat;
+    llm.apiFormatExplicit = true;
+  }
   if (input.cli?.stream !== undefined) llm.stream = input.cli.stream;
   if (input.cli?.apiKeyEnv) {
     llm.apiKey = env[input.cli.apiKeyEnv] ?? "";
@@ -307,7 +317,10 @@ async function applyLegacyEnvConfig(
   }
 
   applyCommonEnv(config, llm, env);
-  if (input.cli?.apiFormat) llm.apiFormat = input.cli.apiFormat;
+  if (input.cli?.apiFormat) {
+    llm.apiFormat = input.cli.apiFormat;
+    llm.apiFormatExplicit = true;
+  }
   if (input.cli?.stream !== undefined) llm.stream = input.cli.stream;
 }
 
@@ -319,9 +332,16 @@ function applyServiceEntry(llm: Record<string, unknown>, entry: ServiceConfigEnt
   llm.baseUrl = entry.baseUrl ?? resolveServicePreset(entry.service)?.baseUrl ?? "";
 
   if (entry.temperature !== undefined) llm.temperature = entry.temperature;
-  if (entry.apiFormat !== undefined) llm.apiFormat = entry.apiFormat;
-  else if (transportDefaults?.apiFormat !== undefined) llm.apiFormat = transportDefaults.apiFormat;
-  else llm.apiFormat = resolveServicePreset(entry.service)?.api.startsWith("openai-responses") ? "responses" : "chat";
+  if (entry.apiFormat !== undefined) {
+    llm.apiFormat = entry.apiFormat;
+    llm.apiFormatExplicit = true;
+  } else if (transportDefaults?.apiFormat !== undefined) {
+    llm.apiFormat = transportDefaults.apiFormat;
+    delete llm.apiFormatExplicit;
+  } else {
+    llm.apiFormat = resolveServicePreset(entry.service)?.api.startsWith("openai-responses") ? "responses" : "chat";
+    delete llm.apiFormatExplicit;
+  }
   if (entry.stream !== undefined) llm.stream = entry.stream;
   else if (transportDefaults?.stream !== undefined) llm.stream = transportDefaults.stream;
 }
@@ -334,7 +354,10 @@ function applyCommonEnv(
   if (env.INKOS_LLM_TEMPERATURE) llm.temperature = Number.parseFloat(env.INKOS_LLM_TEMPERATURE);
   if (env.INKOS_LLM_THINKING_BUDGET) llm.thinkingBudget = Number.parseInt(env.INKOS_LLM_THINKING_BUDGET, 10);
   if (env.INKOS_LLM_PROXY_URL) llm.proxyUrl = env.INKOS_LLM_PROXY_URL;
-  if (env.INKOS_LLM_API_FORMAT) llm.apiFormat = env.INKOS_LLM_API_FORMAT;
+  if (env.INKOS_LLM_API_FORMAT) {
+    llm.apiFormat = env.INKOS_LLM_API_FORMAT;
+    llm.apiFormatExplicit = true;
+  }
   if (env.INKOS_LLM_STREAM) llm.stream = parseBoolean(env.INKOS_LLM_STREAM);
   if (env.INKOS_DEFAULT_LANGUAGE) config.language = env.INKOS_DEFAULT_LANGUAGE;
 

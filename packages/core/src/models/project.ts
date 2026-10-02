@@ -40,6 +40,9 @@ export const LLMConfigSchema = z.object({
   extra: z.record(z.unknown()).optional(),
   headers: z.record(z.string()).optional(),
   apiFormat: z.enum(API_FORMATS).default("chat"),
+  // 内部标记：apiFormat 是否来自用户显式配置（service entry / cli / env）。
+  // 仅用于 createLLMClient 的 apiFormat authority 判断，不参与模型选择同步。
+  apiFormatExplicit: z.boolean().optional(),
   stream: z.boolean().default(true),
   services: z.array(LLMServiceEntrySchema).optional(),
   defaultModel: z.string().min(1).optional(),

@@ -29,6 +29,7 @@ import { ProjectArtifactDrawer } from "../components/chat/ProjectArtifactDrawer"
 import { PlayHud } from "../components/chat/PlayHud";
 import { PlayChoicePanel } from "../components/chat/PlayChoicePanel";
 import { latestPlayChoiceSet } from "../components/chat/play-choices";
+import { ReasoningEffortControl } from "../components/chat/ReasoningEffortControl";
 import {
   BotMessageSquare,
   ArrowUp,
@@ -308,12 +309,14 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
   const lastFailedSend = useChatStore(chatSelectors.activeSessionLastFailedSend);
   const selectedModel = useChatStore((s) => s.selectedModel);
   const selectedService = useChatStore((s) => s.selectedService);
+  const reasoningEffort = useChatStore(chatSelectors.activeSessionReasoningEffort);
   // -- Store actions --
   const setInput = useChatStore((s) => s.setInput);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const retryLastSend = useChatStore((s) => s.retryLastSend);
   const abortSession = useChatStore((s) => s.abortSession);
   const setSelectedModel = useChatStore((s) => s.setSelectedModel);
+  const setSessionReasoningEffort = useChatStore((s) => s.setSessionReasoningEffort);
   const loadSessionList = useChatStore((s) => s.loadSessionList);
   const createSession = useChatStore((s) => s.createSession);
   const markProposalResolved = useChatStore((s) => s.markProposalResolved);
@@ -600,6 +603,9 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
       if (chatStreaming || loading) await abortSession(activeSessionId);
       return;
     }
+    // Snapshot the stop shown at send time, before any await below; moving the
+    // slider while attachments serialize must not change this request.
+    const sendEffort = useChatStore.getState().sessions[activeSessionId]?.reasoningEffort;
     const requestedSkills = selectedSkillIdsForSend(selectedSkillIds);
     autoScrollPinnedRef.current = true;
     const attachments = await serializeChatAttachments(attachedFiles);
@@ -613,6 +619,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
       actionSource: "free-text",
       requestedSkills,
       attachments,
+      ...(sendEffort ? { reasoningEffort: sendEffort } : {}),
     });
     setAttachedFiles([]);
     setAttachmentError(null);
@@ -1107,44 +1114,70 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                     : <ArrowUp size={14} strokeWidth={2.5} />}
                 </button>
               </div>
-              <div className="flex items-center gap-2 px-3 pb-2 border-t border-border/20 pt-1.5">
-                {modelPickerStatus === "loading" ? (
-                  <span className="text-[15px] text-muted-foreground/40 animate-pulse">{isZh ? "加载模型..." : "Loading models..."}</span>
-                ) : modelPickerStatus === "ready" ? (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger className="flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-muted text-[16px] transition-colors cursor-pointer">
-                      <span className="font-medium truncate max-w-[260px]">
-                        {selectedModelLabel}
-                      </span>
-                      <ChevronDown size={17} className="text-muted-foreground" />
-                    </DropdownMenuTrigger>
-                    <ModelPickerContent
-                      groupedModels={groupedModels}
-                      selectedModel={selectedModel}
-                      selectedService={selectedService}
-                      onSelect={(serviceId, modelId) => setSelectedModel(modelId, serviceId)}
-                      onManage={() => nav.toServices()}
-                    />
-                  </DropdownMenu>
-                ) : (
-                  <button
-                    onClick={() => nav.toServices()}
-                    className="text-[15px] text-muted-foreground/50 hover:text-primary transition-colors"
-                  >
-                    {isZh ? "配置模型 →" : "Set up models →"}
-                  </button>
-                )}
-                {currentSessionKind === "play" && (
-                  <button
-                    type="button"
-                    onClick={() => setWorldPanelOpen((v) => !v)}
-                    className={`ml-auto flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[16px] font-medium transition-colors ${worldPanelOpen ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted hover:text-primary"}`}
-                    title={isZh ? "查看世界：持有 / 状态 / 关系" : "View world: holdings / state / relations"}
-                  >
-                    <Gamepad2 size={18} />
-                    {isZh ? "查看世界" : "View World"}
-                  </button>
-                )}
+              {/* Footer rows are explicit grid areas switched by a container
+                  query on the composer's own width — never by incidental
+                  flex-wrap — so the picker, effort slider and world button
+                  cannot overlap or spill when the composer is narrow. */}
+              <div className="@container border-t border-border/20 px-3 pb-2 pt-1.5">
+                <div
+                  data-testid="composer-footer"
+                  className={`grid items-center gap-x-2 gap-y-1.5 ${currentSessionKind === "play"
+                    ? "grid-cols-[minmax(0,1fr)_auto] [grid-template-areas:'model_world'_'effort_effort'] @min-[38rem]:grid-cols-[minmax(0,1fr)_minmax(13rem,17rem)_auto] @min-[38rem]:[grid-template-areas:'model_effort_world']"
+                    : "grid-cols-[minmax(0,1fr)] [grid-template-areas:'model'_'effort'] @min-[28rem]:grid-cols-[minmax(0,1fr)_minmax(13rem,17rem)] @min-[28rem]:[grid-template-areas:'model_effort']"}`}
+                >
+                  <div className="flex min-w-0 [grid-area:model]">
+                    {modelPickerStatus === "loading" ? (
+                      <span className="truncate text-[15px] text-muted-foreground/40 animate-pulse">{isZh ? "加载模型..." : "Loading models..."}</span>
+                    ) : modelPickerStatus === "ready" ? (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          data-testid="model-picker-trigger"
+                          className="flex min-w-0 max-w-full items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-muted text-[16px] transition-colors cursor-pointer"
+                        >
+                          <span className="font-medium truncate max-w-[260px]">
+                            {selectedModelLabel}
+                          </span>
+                          <ChevronDown size={17} className="shrink-0 text-muted-foreground" />
+                        </DropdownMenuTrigger>
+                        <ModelPickerContent
+                          groupedModels={groupedModels}
+                          selectedModel={selectedModel}
+                          selectedService={selectedService}
+                          onSelect={(serviceId, modelId) => setSelectedModel(modelId, serviceId)}
+                          onManage={() => nav.toServices()}
+                        />
+                      </DropdownMenu>
+                    ) : (
+                      <button
+                        onClick={() => nav.toServices()}
+                        className="truncate text-[15px] text-muted-foreground/50 hover:text-primary transition-colors"
+                      >
+                        {isZh ? "配置模型 →" : "Set up models →"}
+                      </button>
+                    )}
+                  </div>
+                  <ReasoningEffortControl
+                    className="pl-2 [grid-area:effort]"
+                    value={reasoningEffort}
+                    disabled={!activeSessionId}
+                    isZh={isZh}
+                    onChange={(effort) => {
+                      if (activeSessionId) setSessionReasoningEffort(activeSessionId, effort);
+                    }}
+                  />
+                  {currentSessionKind === "play" && (
+                    <button
+                      type="button"
+                      data-testid="view-world-button"
+                      onClick={() => setWorldPanelOpen((v) => !v)}
+                      className={`flex items-center gap-1.5 justify-self-end whitespace-nowrap rounded-md px-3 py-1.5 text-[16px] font-medium transition-colors [grid-area:world] ${worldPanelOpen ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted hover:text-primary"}`}
+                      title={isZh ? "查看世界：持有 / 状态 / 关系" : "View world: holdings / state / relations"}
+                    >
+                      <Gamepad2 size={18} className="shrink-0" />
+                      {isZh ? "查看世界" : "View World"}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
             {currentSessionKind === "play" ? (

@@ -13,6 +13,9 @@ export const chatSelectors = {
   // 上一条失败的聊天轮发送记录；存在且非聊天流式中时 UI 显示"重试"按钮。
   activeSessionLastFailedSend: (s: ChatState) =>
     (s.activeSessionId ? s.sessions[s.activeSessionId]?.lastFailedSend : undefined) ?? null,
+  // Primitive result: the composer's slider re-renders only when the stop changes.
+  activeSessionReasoningEffort: (s: ChatState) =>
+    (s.activeSessionId ? s.sessions[s.activeSessionId]?.reasoningEffort : undefined) ?? "medium",
   isEmpty: (s: ChatState) =>
     ((s.activeSessionId ? s.sessions[s.activeSessionId]?.messages.length : 0) ?? 0) === 0
     && !Boolean(s.activeSessionId && s.sessions[s.activeSessionId]?.isStreaming),

@@ -208,6 +208,15 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
       };
     }),
 
+  setSessionReasoningEffort: (sessionId, reasoningEffort) => {
+    // Same-value writes are dropped so repeated slider events never notify subscribers.
+    const current = get().sessions[sessionId];
+    if (!current || current.reasoningEffort === reasoningEffort) return;
+    set((state) => ({
+      sessions: updateSession(state.sessions, sessionId, () => ({ reasoningEffort })),
+    }));
+  },
+
   setSelectedModel: (model, service) => set({ selectedModel: model, selectedService: service }),
 
   loadSessionList: async (bookId) => {
@@ -468,6 +477,9 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
     // 只挡"聊天轮流式中"：后台生产任务运行期间（isStreaming=true 但
     // isChatStreaming=false）允许继续发消息，聊天与任务并行。
     if ((!trimmed && attachments.length === 0) || !session || session.isChatStreaming) return;
+    // Capture before the very first await (including draft persistence).
+    // Never mutate caller options or reference mutable runtime state in a retry.
+    options = Object.freeze({ ...options, reasoningEffort: options?.reasoningEffort ?? session.reasoningEffort });
     const userInstruction = trimmed || tr("请阅读我上传的文件。", "Please read the files I uploaded.");
     const activeBookId = options?.activeBookId ?? session.bookId ?? undefined;
     const sessionKind: ChatSessionKind = options?.sessionKind
@@ -562,6 +574,7 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           instruction,
+          reasoningEffort: options.reasoningEffort,
           activeBookId,
           sessionKind,
           playMode,
@@ -606,7 +619,7 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
         });
       }
       const hasStream = Boolean(
-        get().sessions[sessionId]?.messages.some((message) => message.timestamp === streamTs),
+        get().sessions[sessionId]?.messages.some((message) => message.role === "assistant" && message.timestamp === streamTs),
       );
       const attachResponseTools = () => {
         if (responseToolExecutions.length === 0) return;
@@ -694,7 +707,7 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
       }) ?? false;
       if (failureAlreadyShown) return;
       const hasStream = Boolean(
-        get().sessions[sessionId]?.messages.some((message) => message.timestamp === streamTs),
+        get().sessions[sessionId]?.messages.some((message) => message.role === "assistant" && message.timestamp === streamTs),
       );
       if (hasStream) {
         get().replaceStreamWithError(sessionId, streamTs, errorMessage);

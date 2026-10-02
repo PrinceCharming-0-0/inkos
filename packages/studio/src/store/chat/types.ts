@@ -1,4 +1,4 @@
-import type { ActionPayload, ActionSource, PlayMode, RequestedIntent, SessionKind } from "@actalk/inkos-core";
+import type { ActionPayload, ActionSource, PlayMode, RequestedIntent, SessionKind, ReasoningEffort } from "@actalk/inkos-core";
 
 // -- Data types --
 
@@ -132,6 +132,8 @@ export type ChatRequestedIntent = RequestedIntent;
 export type ChatActionPayload = ActionPayload;
 
 export interface SendMessageOptions {
+  /** Explicit snapshot for replay/retry; normal sends read the session runtime. */
+  readonly reasoningEffort?: ReasoningEffort;
   readonly activeBookId?: string;
   readonly sessionKind?: ChatSessionKind;
   readonly actionSource?: ChatActionSource;
@@ -159,6 +161,8 @@ export interface ChatAttachmentPayload {
 }
 
 export interface SessionRuntime {
+  /** Memory-only session setting; newly loaded runtimes always start at medium. */
+  readonly reasoningEffort: ReasoningEffort;
   readonly sessionId: string;
   readonly bookId: string | null;
   readonly sessionKind?: ChatSessionKind;
@@ -228,6 +232,7 @@ export interface MessageActions {
   // User stop aborts the complete workflow; navigation uses chat scope so a
   // background production task can keep running after its Pi turn is cancelled.
   abortSession: (sessionId: string, scope?: "all" | "chat") => Promise<void>;
+  setSessionReasoningEffort: (sessionId: string, effort: ReasoningEffort) => void;
   setSelectedModel: (model: string | null, service: string | null) => void;
 }
 

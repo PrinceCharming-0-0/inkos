@@ -202,7 +202,69 @@ describe("resolveServiceModel", () => {
     expect(result.model.id).toBe("gpt-4o");
   });
 
-  it("resolves custom service with responses api format", async () => {
+  it("maps explicit custom apiFormat values to their pi-ai API identities", async () => {
+    await mkdir(join(root, ".inkos"), { recursive: true });
+    await writeFile(
+      join(root, ".inkos", "secrets.json"),
+      JSON.stringify({ services: { "custom:内网GPT": { apiKey: "sk-corp" } } }),
+    );
+
+    const chat = await resolveServiceModel(
+      "custom:内网GPT", "gpt-4o", root, "https://llm.internal.corp/v1", "chat",
+    );
+    const responses = await resolveServiceModel(
+      "custom:内网GPT", "gpt-4o", root, "https://llm.internal.corp/v1", "responses",
+    );
+    const anthropic = await resolveServiceModel(
+      "custom:内网GPT", "gpt-4o", root, "https://llm.internal.corp/v1", "anthropic",
+    );
+
+    expect(chat.model.api).toBe("openai-completions");
+    expect(responses.model.api).toBe("openai-responses");
+    expect(anthropic.model.api).toBe("anthropic-messages");
+  });
+
+  it("uses explicit apiFormat over a conflicting non-custom preset API", async () => {
+    await mkdir(join(root, ".inkos"), { recursive: true });
+    await writeFile(
+      join(root, ".inkos", "secrets.json"),
+      JSON.stringify({ services: { minimax: { apiKey: "sk-minimax" } } }),
+    );
+
+    const result = await resolveServiceModel(
+      "minimax", "MiniMax-M2.7", root, undefined, "responses",
+    );
+
+    expect(result.model.api).toBe("openai-responses");
+  });
+
+  it("uses explicit anthropic apiFormat over a conflicting non-custom preset API", async () => {
+    await mkdir(join(root, ".inkos"), { recursive: true });
+    await writeFile(
+      join(root, ".inkos", "secrets.json"),
+      JSON.stringify({ services: { minimax: { apiKey: "sk-minimax" } } }),
+    );
+
+    const result = await resolveServiceModel(
+      "minimax", "MiniMax-M2.7", root, undefined, "anthropic",
+    );
+
+    expect(result.model.api).toBe("anthropic-messages");
+  });
+
+  it("keeps preset API when apiFormat is not explicitly configured (legacy fallback)", async () => {
+    await mkdir(join(root, ".inkos"), { recursive: true });
+    await writeFile(
+      join(root, ".inkos", "secrets.json"),
+      JSON.stringify({ services: { minimax: { apiKey: "sk-minimax" } } }),
+    );
+
+    const result = await resolveServiceModel("minimax", "MiniMax-M2.7", root);
+
+    expect(result.model.api).toBe("openai-completions");
+  });
+
+  it("uses custom service with responses api format", async () => {
     await mkdir(join(root, ".inkos"), { recursive: true });
     await writeFile(
       join(root, ".inkos", "secrets.json"),

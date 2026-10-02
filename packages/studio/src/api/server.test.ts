@@ -326,6 +326,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     computeAnalytics: vi.fn(() => ({})),
     isSafeBookId: actual.isSafeBookId,
     normalizePlatformOrOther: actual.normalizePlatformOrOther,
+    normalizeReasoningEffort: actual.normalizeReasoningEffort,
     normalizeApiFormat: actual.normalizeApiFormat,
     defaultChapterLength: actual.defaultChapterLength,
     inferLanguage: actual.inferLanguage,
@@ -3454,6 +3455,29 @@ describe("createStudioServer daemon lifecycle", () => {
       }),
       "检查当前状态",
     );
+  });
+
+  it.each(["none", "low", "medium", "high", "xhigh", "max", undefined])("accepts Chat effort %s without altering model identity", async (reasoningEffort) => {
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction: "hello", sessionId: "agent-session-1", reasoningEffort }),
+    });
+    expect(response.status).toBe(200);
+    expect(runAgentSessionMock.mock.calls.at(-1)?.[0].reasoningEffort).toBe(reasoningEffort);
+  });
+
+  it.each(["default", "minimal", "HIGH", "", null, 1, {}, []])("rejects invalid effort %s before running Agent", async (reasoningEffort) => {
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction: "hello", sessionId: "agent-session-1", reasoningEffort }),
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "INVALID_REASONING_EFFORT" } });
+    expect(runAgentSessionMock).not.toHaveBeenCalled();
   });
 
   it("stores uploaded attachments and forwards them to the agent session", async () => {
