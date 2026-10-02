@@ -1,6 +1,7 @@
-import { useId, type KeyboardEvent } from "react";
+import { useId, type CSSProperties, type KeyboardEvent } from "react";
 import type { ReasoningEffort } from "@actalk/inkos-core";
 import {
+  REASONING_EFFORT_STEPS,
   REASONING_EFFORT_MAX_INDEX,
   REASONING_EFFORT_MIN_INDEX,
   reasoningEffortForKey,
@@ -30,6 +31,7 @@ export function ReasoningEffortControl({
 }) {
   const inputId = useId();
   const label = reasoningEffortLabel(value);
+  const index = reasoningEffortToIndex(value);
   const commit = (next: ReasoningEffort | null) => {
     if (next && next !== value) onChange(next);
   };
@@ -45,34 +47,48 @@ export function ReasoningEffortControl({
   return (
     <div
       data-testid="reasoning-effort-control"
-      className={`flex min-w-0 items-center gap-2 ${className ?? ""}`}
+      className={`reasoning-effort min-w-0 ${className ?? ""}`}
+      style={{ "--effort-progress": `${(index / REASONING_EFFORT_MAX_INDEX) * 100}%` } as CSSProperties}
     >
       <label
         htmlFor={inputId}
-        className="shrink-0 whitespace-nowrap text-[13px] text-muted-foreground"
+        className="reasoning-effort-label"
       >
-        {isZh ? "推理强度" : "Effort"}
+        {isZh ? "思考强度" : "Effort"}<span aria-hidden="true">{isZh ? "：" : ":"}</span>
       </label>
-      <input
-        id={inputId}
-        type="range"
-        min={REASONING_EFFORT_MIN_INDEX}
-        max={REASONING_EFFORT_MAX_INDEX}
-        step={1}
-        value={reasoningEffortToIndex(value)}
-        aria-valuetext={label}
-        disabled={disabled}
-        onChange={(event) => commit(reasoningEffortFromIndex(event.currentTarget.value))}
-        onKeyDown={onKeyDown}
-        className="h-1.5 min-w-0 flex-1 cursor-pointer accent-primary disabled:cursor-not-allowed disabled:opacity-40"
-      />
       <output
         htmlFor={inputId}
         data-testid="reasoning-effort-value"
-        className="w-[4.5rem] shrink-0 whitespace-nowrap text-left text-[13px] font-medium tabular-nums"
+        className="reasoning-effort-value"
       >
         {label}
       </output>
+      <div className="reasoning-effort-slider">
+        <div className="reasoning-effort-track" aria-hidden="true">
+          <div className="reasoning-effort-fill" />
+          {REASONING_EFFORT_STEPS.map((effort, stop) => (
+            <span
+              key={effort}
+              className="reasoning-effort-node"
+              data-selected={stop <= index}
+              style={{ left: `${(stop / REASONING_EFFORT_MAX_INDEX) * 100}%` }}
+            />
+          ))}
+        </div>
+        <input
+          id={inputId}
+          type="range"
+          min={REASONING_EFFORT_MIN_INDEX}
+          max={REASONING_EFFORT_MAX_INDEX}
+          step={1}
+          value={index}
+          aria-valuetext={label}
+          disabled={disabled}
+          onChange={(event) => commit(reasoningEffortFromIndex(event.currentTarget.value))}
+          onKeyDown={onKeyDown}
+          className="reasoning-effort-input"
+        />
+      </div>
     </div>
   );
 }

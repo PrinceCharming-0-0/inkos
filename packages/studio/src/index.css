@@ -198,6 +198,150 @@ h3 { font-size: 1.25rem; }
   outline-offset: 2px;
 }
 
+/* Native range owns pointer/keyboard input. The decorative rail is inset by
+   half the 20px thumb: all six dots share its exact center-to-center travel. */
+.reasoning-effort {
+  --effort-thumb-size: 20px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: center;
+}
+
+.reasoning-effort-label {
+  grid-column: 1;
+  grid-row: 2;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.reasoning-effort-value {
+  grid-column: 2;
+  grid-row: 1;
+  display: block;
+  color: var(--primary);
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.reasoning-effort-slider {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  position: relative;
+  height: 32px;
+}
+
+.reasoning-effort-track {
+  position: absolute;
+  inset-inline: calc(var(--effort-thumb-size) / 2);
+  top: 50%;
+  height: 12px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--input);
+  pointer-events: none;
+}
+
+/* Extend the pill caps beyond the endpoint centers so endpoint dots sit
+   inside the rail; the larger thumb still fits entirely inside the input. */
+.reasoning-effort-track::before,
+.reasoning-effort-fill::before {
+  content: '';
+  position: absolute;
+  inset: 0 -6px;
+  border-radius: inherit;
+  background: inherit;
+}
+
+.reasoning-effort-fill {
+  position: relative;
+  width: var(--effort-progress);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+}
+
+.reasoning-effort-node {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--muted-foreground);
+}
+
+.reasoning-effort-node[data-selected="true"] {
+  background: #fff;
+}
+
+.reasoning-effort-input {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  direction: ltr;
+}
+
+.reasoning-effort-input::-webkit-slider-runnable-track {
+  height: 12px;
+  background: transparent;
+}
+
+.reasoning-effort-input::-moz-range-track {
+  height: 12px;
+  background: transparent;
+}
+
+.reasoning-effort-input::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  width: var(--effort-thumb-size);
+  height: var(--effort-thumb-size);
+  margin-top: -4px;
+  border: 1px solid oklch(0.7 0 0);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.2);
+}
+
+.reasoning-effort-input::-moz-range-thumb {
+  box-sizing: border-box;
+  width: var(--effort-thumb-size);
+  height: var(--effort-thumb-size);
+  border: 1px solid oklch(0.7 0 0);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.2);
+}
+
+.reasoning-effort:has(input:disabled) {
+  opacity: 0.4;
+}
+
+.reasoning-effort-input:disabled {
+  cursor: not-allowed;
+}
+
+/* No position transitions: dragging stays immediate, including reduced motion. */
+@media (pointer: coarse) {
+  .reasoning-effort-slider { height: 44px; }
+}
+
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

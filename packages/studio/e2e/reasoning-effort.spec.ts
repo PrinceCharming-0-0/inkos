@@ -114,6 +114,9 @@ async function openChat(page: Page, kind: SessionKind) {
   const slider = page.getByRole("slider", { name: "Effort", exact: true });
   await expect(slider).toBeEnabled();
   await expect(page.getByTestId("model-picker-trigger")).toBeVisible();
+  // The visible title's width depends on the web font. Measure only after
+  // it settles, otherwise a font swap changes the rail between assertions.
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
   return { agentBodies, slider, value: page.getByTestId("reasoning-effort-value") };
 }
 
@@ -137,6 +140,69 @@ test.describe("chat reasoning effort slider", () => {
     await expect(slider).toHaveAttribute("step", "1");
     await expectStop(slider, value, "Medium");
   });
+
+  for (const theme of ["light", "dark"] as const) {
+    test(`segmented rail geometry, pointer input and focus in ${theme} theme`, async ({ page }) => {
+      const { slider, value } = await openChat(page, "chat");
+      await page.evaluate((dark) => document.documentElement.classList.toggle("dark", dark), theme === "dark");
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      const track = page.locator(".reasoning-effort-track");
+      const nodes = page.locator(".reasoning-effort-node");
+      await expect(nodes).toHaveCount(6);
+      const rail = (await track.boundingBox())!;
+      const input = (await slider.boundingBox())!;
+      // Chromium does not expose native thumb geometry via getComputedStyle's
+      // pseudo argument (it returns the input's width). Use the shared size
+      // token, then verify travel with actual pointer input and endpoint images.
+      const thumbSize = await slider.evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--effort-thumb-size")));
+      expect(thumbSize).toBe(20);
+      expect(rail.x - input.x).toBeCloseTo(thumbSize / 2, 1);
+      expect(input.x + input.width - rail.x - rail.width).toBeCloseTo(thumbSize / 2, 1);
+      expect(input.height).toBeGreaterThan(thumbSize);
+      const y = rail.y + rail.height / 2;
+      for (const [index, label] of STOPS.entries()) {
+        const dot = (await nodes.nth(index).boundingBox())!;
+        const x = rail.x + rail.width * index / 5;
+        expect(dot.x + dot.width / 2).toBeCloseTo(x, 1);
+        expect(dot.y + dot.height / 2).toBeCloseTo(y, 1);
+        // Hit the visible dot, including both endpoint thumb centers.
+        await page.mouse.click(x, y);
+        await expectStop(slider, value, label);
+        await expect(page.locator('.reasoning-effort-node[data-selected="true"]')).toHaveCount(index + 1);
+        const fill = await page.locator(".reasoning-effort-fill").evaluate((el) => ({
+          width: el.getBoundingClientRect().width, color: getComputedStyle(el).backgroundColor,
+        }));
+        expect(fill.width).toBeCloseTo(rail.width * index / 5, 1);
+        expect(await value.evaluate((el) => getComputedStyle(el).color)).toBe(fill.color);
+        if (index === 0 || index === 5) {
+          await page.getByTestId("reasoning-effort-control").screenshot({ path: `test-results/reasoning-effort-${theme}-${label}.png` });
+        }
+      }
+      // Click between dots and verify discrete snapping.
+      await page.mouse.click(rail.x + rail.width * 0.51, y);
+      await expectStop(slider, value, "High");
+      await slider.fill("0");
+      await page.mouse.move(rail.x, y);
+      await page.mouse.down();
+      for (const index of [1, 2, 3, 4, 5, 4, 3, 2, 1, 0]) {
+        await page.mouse.move(rail.x + rail.width * index / 5, y, { steps: 3 });
+        await expectStop(slider, value, STOPS[index]);
+      }
+      await page.mouse.up();
+      await slider.focus();
+      await slider.press("ArrowRight");
+      expect(await slider.evaluate((el) => el.matches(":focus-visible"))).toBe(true);
+      expect(await slider.evaluate((el) => getComputedStyle(el).outlineStyle)).toBe("solid");
+      await page.getByTestId("reasoning-effort-control").screenshot({ path: `test-results/reasoning-effort-${theme}-focus.png` });
+      const colors = await track.evaluate((el) => ({
+        track: getComputedStyle(el).backgroundColor,
+        fill: getComputedStyle(el.querySelector(".reasoning-effort-fill")!).backgroundColor,
+        selected: getComputedStyle(el.querySelector('[data-selected="true"]')!).backgroundColor,
+        unselected: getComputedStyle(el.querySelector('[data-selected="false"]')!).backgroundColor,
+      }));
+      expect(new Set(Object.values(colors)).size).toBe(4);
+    });
+  }
 
   test("every stop is selectable; None and Max reach the store and the request", async ({ page }) => {
     const { slider, value, agentBodies } = await openChat(page, "chat");
@@ -280,6 +346,20 @@ test.describe("chat reasoning effort slider", () => {
   });
 });
 
+test.describe("touch reasoning effort slider", () => {
+  test.use({ hasTouch: true, isMobile: true });
+  test("coarse pointer has a 44px target and taps select all six stops", async ({ page }) => {
+    const { slider, value } = await openChat(page, "chat");
+    expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(true);
+    expect((await slider.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    const rail = (await page.locator(".reasoning-effort-track").boundingBox())!;
+    for (const [index, label] of STOPS.entries()) {
+      await page.touchscreen.tap(rail.x + rail.width * index / 5, rail.y + rail.height / 2);
+      await expectStop(slider, value, label);
+    }
+  });
+});
+
 // Viewports where the app shell (fixed sidebar) fits; below ~760px the shell
 // itself clips the chat column, which predates and is independent of this control.
 const VIEWPORTS = [768, 1024, 1280] as const;
@@ -298,6 +378,7 @@ async function forceComposerWidth(page: Page, width: number) {
 async function expectComposerFooterClean(page: Page, kind: SessionKind) {
   const footer = page.getByTestId("composer-footer");
   await expect(footer).toBeVisible();
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
   const metrics = await footer.evaluate((el) => {
     const rect = (node: Element | null) => {
       if (!node) return null;
@@ -306,7 +387,6 @@ async function expectComposerFooterClean(page: Page, kind: SessionKind) {
     };
     const control = el.querySelector('[data-testid="reasoning-effort-control"]');
     const output = el.querySelector('[data-testid="reasoning-effort-value"]') as HTMLElement | null;
-    const label = control?.querySelector("label") as HTMLElement | null;
     return {
       footer: rect(el),
       footerOverflow: el.scrollWidth - el.clientWidth,
@@ -317,8 +397,18 @@ async function expectComposerFooterClean(page: Page, kind: SessionKind) {
       slider: rect(el.querySelector('input[type="range"]')),
       output: rect(output),
       outputClipped: output ? output.scrollWidth > output.clientWidth : true,
-      labelClipped: label ? label.scrollWidth > label.clientWidth : true,
+      label: rect(control?.querySelector("label") ?? null),
+      labelClipped: (() => {
+        const label = control?.querySelector("label");
+        return !label || label.scrollWidth > label.clientWidth;
+      })(),
       world: rect(el.querySelector('[data-testid="view-world-button"]')),
+      // Take all rectangles in the same frame, including while the world
+      // panel animates; comparing different frames creates false overlaps.
+      buttons: Array.from(el.parentElement!.parentElement!.querySelectorAll("button"))
+        .filter((button) => button.getClientRects().length > 0)
+        .map((button) => ({ text: button.textContent, box: rect(button) })),
+      illustration: rect(document.querySelector('[aria-label="Auto illustration"], [aria-label="自动配图"]')),
     };
   });
 
@@ -347,8 +437,18 @@ async function expectComposerFooterClean(page: Page, kind: SessionKind) {
   }
   expect(metrics.outputClipped).toBe(false);
   expect(metrics.labelClipped).toBe(false);
+  expect(metrics.label!.right).toBeLessThanOrEqual(metrics.slider!.left);
+  await expect(page.getByRole("slider", { name: /^(Effort|思考强度)$/ })).toBeVisible();
   expect(metrics.slider!.width).toBeGreaterThanOrEqual(60);
   expect(overlaps(metrics.slider!, metrics.output!)).toBe(false);
+  // Include the send/attachment/skill row and the adjacent illustration button.
+  for (const button of metrics.buttons) {
+    expect(overlaps(metrics.control!, button.box!), button.text ?? "composer button").toBe(false);
+  }
+  if (kind === "play") {
+    expect(metrics.illustration).not.toBeNull();
+    expect(overlaps(metrics.control!, metrics.illustration!)).toBe(false);
+  }
 }
 
 for (const kind of ["chat", "play"] as const) {
@@ -370,6 +470,23 @@ for (const kind of ["chat", "play"] as const) {
         await page.screenshot({ path: `test-results/reasoning-effort-${kind}-viewport-${width}.png` });
       });
     }
+
+    test("Chinese title stays beside the rail at narrow and wide composer widths", async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await mockApi(page, kind);
+      await page.route("**/api/v1/project", (route) => route.fulfill({
+        json: { language: "zh", languageExplicit: true },
+      }));
+      await page.goto("/#/chat");
+      const slider = page.getByRole("slider", { name: "思考强度", exact: true });
+      await expect(slider).toBeEnabled();
+      await expect(page.locator(".reasoning-effort-label")).toHaveText("思考强度：");
+      for (const width of COMPOSER_WIDTHS) {
+        await forceComposerWidth(page, width);
+        await expectComposerFooterClean(page, kind);
+      }
+      await page.getByTestId("composer-footer").screenshot({ path: `test-results/reasoning-effort-${kind}-zh-title.png` });
+    });
 
     test("narrow composer widths stay readable on both sides of the breakpoint", async ({ page }) => {
       await page.setViewportSize({ width: 1280, height: 900 });

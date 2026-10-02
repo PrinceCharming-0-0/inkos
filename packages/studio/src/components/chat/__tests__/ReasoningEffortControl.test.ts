@@ -81,7 +81,7 @@ describe("ReasoningEffortControl", () => {
     const inputId = html.match(/<input[^>]*id="([^"]+)"/)?.[1];
     expect(inputId).toBeTruthy();
     expect(html).toContain(`for="${inputId}"`);
-    expect(html).toContain("推理强度");
+    expect(html).toContain("思考强度");
     expect(html).toMatch(/<input[^>]*disabled=""/);
   });
 });
