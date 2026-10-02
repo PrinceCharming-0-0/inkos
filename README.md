@@ -56,6 +56,7 @@ InkOS 是一个面向故事创作与多语言翻译的 AI Agent 系统：长篇�
 InkOS 1.8.0 把“Chat Agent 调工具”和“各类作品管线”收敛成一套围绕 pi-agent 的生产 harness。模型负责理解、提议和调用能力；InkOS 负责确认、上下文、状态、原子落盘和产物真实性。长篇、短篇、剧本、分镜、互动影游、Play 与翻译继续保留各自的专业方法，但共享同一套执行、检索、观测和恢复基础设施。
 
 - **模型配置**：Studio 内置多服务配置、模型路由和封面服务配置；支持 [kkaiapi](https://kkaiapi.com/) / OpenRouter 等全球主流模型聚合入口，以及自定义 OpenAI-compatible 服务。
+- **会话级推理强度**：Studio Chat / Play 输入框支持 None、Low、Medium、High、XHigh、Max 六档调节，默认 Medium；每次发送固定本轮档位，失败重试沿用原值，切换模型保留当前会话的选择。
 - **单一生产 Harness**：Studio Chat、TUI、`inkos interact` 与生产 worker 共用 pi-agent 工具循环和结构化 action/result；既有 pipeline 降为可直接调用、可中断、可观测的确定性能力，不再维护平行的自然语言决策内核。
 - **15 个内置专业 Skills**：长篇写作 / 审稿、商业短篇、Play、剧本、分镜、互动影游、翻译、拆稿、市场研究、导入、封面与去 AI 味都拥有独立 `SKILL.md`；各作品类型复用 Skill 架构，不复用不适合自己的长篇提示词。
 - **统一本地检索**：故事记忆、材料库和 Skill 参考资料共用 SQLite FTS5 / BM25 检索投影；原始文件仍是权威来源，索引可重建，检索结果保留来源与位置。
@@ -347,6 +348,20 @@ inkos short run \
 ### Studio Chat + Action Surface
 
 Studio Chat 不再只是问答框。它可以创建长篇、跑短篇、生成封面、启动 Play、编辑持久化文本文件，并在需要执行重动作前给出确认。普通讨论会直接回答；明确创作动作才进入工具执行。
+
+### Studio Chat / Play 推理强度（Reasoning Effort）
+
+在输入框底部的「推理强度 / Effort」滑杆选择 **None、Low、Medium、High、XHigh、Max**，新建或重新加载会话时默认 **Medium**。可以拖动滑杆，也可以用方向键左右调整一档、`Home` 跳到 None、`End` 跳到 Max。
+
+每个会话独立保存当前选择，切换服务或模型不会重置档位；选择仅保存在内存中，刷新页面后恢复 Medium。点击发送时即固定本轮的推理强度，包括附件读取期间和同一轮内的多次模型调用。发送中调整滑杆只影响下一次发送；「重试上一条消息」沿用失败时的档位。
+
+不同模型对推理强度的支持和映射可能不同：
+
+- **Low / Medium / High / XHigh** 保留 pi-ai 的模型适配行为。例如，不支持原生 XHigh 的模型可能映射为 High；Anthropic 的部分模型使用 thinking token 预算，部分模型使用 adaptive thinking。
+- **None / Max** 按所选协议原值发送。None 不是省略推理字段，也不保证所有模型都能关闭思考；Max 是否可用取决于上游服务与模型。
+- 服务拒绝某个档位时，界面会显示错误，InkOS 不会自动降低档位或改档重发。可以手动选择服务支持的档位，再发送新消息。
+
+当前滑杆作用于 Studio Chat / Play 的对话 Agent；CLI / TUI、后台生产任务和子 Agent 继续使用各自的配置。三种协议的最终请求体、发送与重试快照及浏览器验证记录见 [Reasoning Effort 验收报告](packages/studio/e2e/reasoning-effort-acceptance.md)。
 
 ### InkOS Play：开放世界与分支互动
 

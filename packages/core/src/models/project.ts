@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AudienceStyleTagSchema } from "./audience-style-tag.js";
 
 export const API_FORMATS = ["chat", "responses", "anthropic"] as const;
 export type ApiFormat = (typeof API_FORMATS)[number];
@@ -142,6 +143,7 @@ export const ProjectConfigSchema = z.object({
   name: z.string().min(1),
   version: z.literal("0.1.0"),
   language: z.enum(["zh", "en"]).default("zh"),
+  audienceStyleTags: z.array(AudienceStyleTagSchema).optional(),
   llm: LLMConfigSchema,
   notify: z.array(NotifyChannelSchema).default([]),
   detection: DetectionConfigSchema.optional(),

@@ -48,6 +48,7 @@ import {
   Rows3,
   Film,
   Languages,
+  Tags,
 } from "lucide-react";
 import { InkosLogo } from "./InkosLogo";
 
@@ -82,6 +83,7 @@ interface Nav {
   toDaemon: () => void;
   toLogs: () => void;
   toGenres: () => void;
+  toAudienceStyle: () => void;
   toStyle: () => void;
   toTranslation: () => void;
   toImport: (tab?: "chapters" | "canon" | "fanfic" | "spinoff" | "imitation") => void;
@@ -567,6 +569,12 @@ export function Sidebar({ nav, activePage, sse, t }: {
               icon={<Boxes size={16} />}
               active={activePage === "genres"}
               onClick={nav.toGenres}
+            />
+            <SidebarItem
+              label={t("audienceStyle.title")}
+              icon={<Tags size={16} />}
+              active={activePage === "audience-style"}
+              onClick={nav.toAudienceStyle}
             />
             <SidebarItem
               label={t("nav.config")}

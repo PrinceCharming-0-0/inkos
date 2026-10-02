@@ -317,6 +317,13 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
   }
 
   return {
+    AudienceStyleError: actual.AudienceStyleError,
+    createAudienceStyleTag: actual.createAudienceStyleTag,
+    listAudienceStyleTags: actual.listAudienceStyleTags,
+    readAudienceStyleTag: actual.readAudienceStyleTag,
+    updateAudienceStyleTag: actual.updateAudienceStyleTag,
+    deleteAudienceStyleTag: actual.deleteAudienceStyleTag,
+    copyAudienceStyleTagToProject: actual.copyAudienceStyleTagToProject,
     StateManager: MockStateManager,
     PipelineRunner: MockPipelineRunner,
     Scheduler: MockScheduler,

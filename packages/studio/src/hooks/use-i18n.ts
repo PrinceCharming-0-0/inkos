@@ -1,8 +1,10 @@
 import { useApi } from "./use-api";
+import { audienceStyleStrings } from "../shared/audience-style-strings";
 
 type Lang = "zh" | "en";
 
 const strings = {
+  ...audienceStyleStrings,
   // Header
   "nav.books": { zh: "书籍", en: "Books" },
   "nav.newBook": { zh: "新建书籍", en: "New Book" },

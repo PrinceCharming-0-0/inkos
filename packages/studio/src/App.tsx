@@ -14,6 +14,7 @@ import { TruthFiles } from "./pages/TruthFiles";
 import { DaemonControl } from "./pages/DaemonControl";
 import { LogViewer } from "./pages/LogViewer";
 import { GenreManager } from "./pages/GenreManager";
+import { AudienceStyleManager } from "./pages/AudienceStyleManager";
 import { StyleManager } from "./pages/StyleManager";
 import { TranslationManager } from "./pages/TranslationManager";
 import { ImportManager } from "./pages/ImportManager";
@@ -105,6 +106,7 @@ export function App() {
     toDaemon: () => setRoute({ page: "daemon" }),
     toLogs: () => setRoute({ page: "logs" }),
     toGenres: () => setRoute({ page: "genres" }),
+    toAudienceStyle: (tagId?: string, mode?: "create" | "edit") => setRoute({ page: "audience-style", tagId, mode }),
     toStyle: () => setRoute({ page: "style" }),
     toTranslation: () => setRoute({ page: "translation" }),
     toImport: (tab?: "chapters" | "canon" | "fanfic" | "spinoff" | "imitation") => setRoute({ page: "import", ...(tab ? { tab } : {}) }),
@@ -316,6 +318,11 @@ export function App() {
           {route.page === "genres" && (
             <div className="max-w-4xl mx-auto px-6 py-12 md:px-12 lg:py-16 fade-in">
               <GenreManager nav={nav} theme={theme} t={t} />
+            </div>
+          )}
+          {route.page === "audience-style" && (
+            <div className="max-w-4xl mx-auto px-6 py-12 md:px-12 lg:py-16 fade-in">
+              <AudienceStyleManager key={`${route.tagId ?? ""}:${route.mode ?? ""}`} route={route} nav={nav} theme={theme} t={t} language={currentLang} />
             </div>
           )}
           {route.page === "style" && (

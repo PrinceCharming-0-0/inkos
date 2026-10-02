@@ -124,6 +124,19 @@ describe("hash route", () => {
   });
 });
 
+describe("audience/style routes", () => {
+  it("round-trips list/create/detail/edit and encoded stable ids", () => {
+    const routes = [
+      { page: "audience-style" as const },
+      { page: "audience-style" as const, mode: "create" as const },
+      { page: "audience-style" as const, tagId: "标签 new" },
+      { page: "audience-style" as const, tagId: "标签 new", mode: "edit" as const },
+    ];
+    for (const route of routes) expect(parseHash(routeToHash(route))).toEqual(route);
+    expect(routeToHash({ page: "audience-style", tagId: "new" })).toBe("#/audience-style/tags/new");
+  });
+});
+
 describe("play route", () => {
   it("parses #/play/:id", () => {
     expect(parseHash("#/play/my-id")).toEqual({ page: "play", projectId: "my-id" });

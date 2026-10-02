@@ -136,6 +136,12 @@ import {
   normalizeApiFormat,
   type ApiFormat,
 } from "@actalk/inkos-core";
+import {
+  AudienceStyleError, createAudienceStyleTag, listAudienceStyleTags,
+  readAudienceStyleTag, updateAudienceStyleTag, deleteAudienceStyleTag,
+  copyAudienceStyleTagToProject,
+} from "@actalk/inkos-core";
+import { audienceStyleStrings } from "../shared/audience-style-strings.js";
 import { isConfirmedProductionAction } from "../shared/confirmed-production.js";
 import { summarizeToolResult } from "../shared/tool-result.js";
 import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -2712,7 +2718,12 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
   app.use("/*", cors());
 
   // Structured error handler — ApiError returns typed JSON, others return 500
-  app.onError((error, c) => {
+  app.onError(async (error, c) => {
+    if (error instanceof AudienceStyleError) {
+      const language = await currentProjectLanguage();
+      const message = audienceStyleStrings[`audienceStyle.${error.code}`][language];
+      return c.json({ error: { code: error.code, message } }, error.status as 400);
+    }
     if (error instanceof ApiError) {
       return c.json({ error: { code: error.code, message: error.message } }, error.status as 400);
     }
@@ -2861,6 +2872,39 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     } catch {
       return c.json({ error: `Book "${id}" not found` }, 404);
     }
+  });
+
+  // --- Audience/style tags (independent of genres) ---
+
+  app.get("/api/v1/audience-style-tags", async (c) => {
+    const kind = c.req.query("kind");
+    if (kind && kind !== "audience" && kind !== "style") throw new AudienceStyleError("invalidKind", 400);
+    const tags = await listAudienceStyleTags(root);
+    return c.json({ tags: kind ? tags.filter((tag) => tag.kind === kind) : tags });
+  });
+
+  app.post("/api/v1/audience-style-tags/create", async (c) => {
+    const tag = await createAudienceStyleTag(root, await c.req.json().catch(() => { throw new AudienceStyleError("invalidData", 400); }));
+    return c.json({ tag }, 201);
+  });
+
+  app.get("/api/v1/audience-style-tags/:id", async (c) => {
+    return c.json({ tag: await readAudienceStyleTag(root, c.req.param("id")) });
+  });
+
+  app.put("/api/v1/audience-style-tags/:id", async (c) => {
+    const tag = await updateAudienceStyleTag(root, c.req.param("id"), await c.req.json().catch(() => { throw new AudienceStyleError("invalidData", 400); }));
+    return c.json({ tag });
+  });
+
+  app.delete("/api/v1/audience-style-tags/:id", async (c) => {
+    await deleteAudienceStyleTag(root, c.req.param("id"));
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/v1/audience-style-tags/:id/copy", async (c) => {
+    const result = await copyAudienceStyleTagToProject(root, c.req.param("id"));
+    return c.json({ ok: true, ...result });
   });
 
   // --- Genres ---
