@@ -5,6 +5,7 @@ export const GenreProfileSchema = z.object({
   name: z.string(),
   id: z.string(),
   language: z.enum(["zh", "en"]).default("zh"),
+  source: z.enum(["builtin", "project"]).optional(),
   chapterTypes: z.array(z.string()),
   fatigueWords: z.array(z.string()),
   numericalSystem: z.boolean().default(false),

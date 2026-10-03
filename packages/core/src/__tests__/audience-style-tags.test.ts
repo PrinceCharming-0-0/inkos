@@ -40,6 +40,18 @@ describe("Audience/style tag storage", () => {
     await expect(deleteAudienceStyleTag(root, tag.id)).rejects.toMatchObject({ code: "notFound" });
   });
 
+  it("persists source and preserves builtin on edits that omit source", async () => {
+    await createAudienceStyleTag(root, { ...tag, source: "builtin" });
+    expect((await listAudienceStyleTags(root))[0].source).toBe("builtin");
+    await updateAudienceStyleTag(root, tag.id, { ...tag, name: "Edited builtin" });
+    expect((await readAudienceStyleTag(root, tag.id)).source).toBe("builtin");
+    await writeFile(join(root, "inkos.json"), "{}");
+    await copyAudienceStyleTagToProject(root, tag.id);
+    const config = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
+    expect(config.audienceStyleTags[0].source).toBe("builtin");
+    await expect(createAudienceStyleTag(root, { ...tag, id: "invalid-source", source: "other" })).rejects.toMatchObject({ code: "invalidData" });
+  });
+
   it("rejects duplicate ids and names in the same language, including edit collisions", async () => {
     await createAudienceStyleTag(root, tag);
     await expect(createAudienceStyleTag(root, tag)).rejects.toMatchObject({ code: "duplicateId" });

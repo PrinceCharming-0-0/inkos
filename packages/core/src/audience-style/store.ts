@@ -102,8 +102,9 @@ export function createAudienceStyleTag(root: string, input: unknown): Promise<Au
 
 export function updateAudienceStyleTag(root: string, id: string, input: unknown): Promise<AudienceStyleTag> {
   return serialize(root, async () => {
-    await readAudienceStyleTag(root, id);
-    const tag = parseInput(input);
+    const existing = await readAudienceStyleTag(root, id);
+    const parsed = parseInput(input);
+    const tag = { ...parsed, ...(parsed.source === undefined && existing.source !== undefined ? { source: existing.source } : {}) };
     if (tag.id !== id) throw new AudienceStyleError("immutableId", 400);
     await assertUnique(root, tag, true);
     await save(root, tag);

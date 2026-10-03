@@ -59,7 +59,7 @@ export function App() {
   const sse = useSSE();
   const { theme, setTheme } = useTheme();
   const { t, lang: currentLang } = useI18n();
-  const { data: project, error: projectError, refetch: refetchProject } = useApi<{ language: string; languageExplicit: boolean }>("/project");
+  const { data: project, error: projectError, refetch: refetchProject } = useApi<{ language: string; languageExplicit: boolean; projectRoot: string }>("/project");
   const [showLanguageSelector, setShowLanguageSelector] = useState(false);
   const [ready, setReady] = useState(false);
 
@@ -317,12 +317,12 @@ export function App() {
           )}
           {route.page === "genres" && (
             <div className="max-w-4xl mx-auto px-6 py-12 md:px-12 lg:py-16 fade-in">
-              <GenreManager nav={nav} theme={theme} t={t} />
+              <GenreManager nav={nav} theme={theme} t={t} projectRoot={project?.projectRoot ?? ""} />
             </div>
           )}
           {route.page === "audience-style" && (
             <div className="max-w-4xl mx-auto px-6 py-12 md:px-12 lg:py-16 fade-in">
-              <AudienceStyleManager key={`${route.tagId ?? ""}:${route.mode ?? ""}`} route={route} nav={nav} theme={theme} t={t} language={currentLang} />
+              <AudienceStyleManager key={`${route.tagId ?? ""}:${route.mode ?? ""}`} route={route} nav={nav} theme={theme} t={t} language={currentLang} projectRoot={project?.projectRoot ?? ""} />
             </div>
           )}
           {route.page === "style" && (

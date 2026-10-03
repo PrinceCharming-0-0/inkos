@@ -5,6 +5,7 @@ import type { TFunction } from "../hooks/use-i18n";
 import { useI18n } from "../hooks/use-i18n";
 import { useColors } from "../hooks/use-colors";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { formatCommaSeparated, MixedCommaError, parseCommaSeparated, rememberCommaSeparated } from "../shared/comma-separated";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 
 interface GenreInfo {
@@ -55,10 +56,6 @@ const EMPTY_FORM: GenreFormData = {
   pacingRule: "",
   body: "",
 };
-
-function parseCommaSeparated(value: string): ReadonlyArray<string> {
-  return value.split(",").map((s) => s.trim()).filter(Boolean);
-}
 
 function GenreForm({
   form,
@@ -203,7 +200,7 @@ interface Nav {
   toDashboard: () => void;
 }
 
-export function GenreManager({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunction }) {
+export function GenreManager({ nav, theme, t, projectRoot }: { nav: Nav; theme: Theme; t: TFunction; projectRoot: string }) {
   const c = useColors(theme);
   const { lang } = useI18n();
   const { data, refetch } = useApi<{ genres: ReadonlyArray<GenreInfo> }>("/genres");
@@ -236,8 +233,8 @@ export function GenreManager({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFu
       id: detail.profile.id,
       name: detail.profile.name,
       language: detail.profile.language as "zh" | "en",
-      chapterTypes: detail.profile.chapterTypes.join(", "),
-      fatigueWords: detail.profile.fatigueWords.join(", "),
+      chapterTypes: formatCommaSeparated(detail.profile.chapterTypes, projectRoot, "genre", detail.profile.id, "chapterTypes"),
+      fatigueWords: formatCommaSeparated(detail.profile.fatigueWords, projectRoot, "genre", detail.profile.id, "fatigueWords"),
       numericalSystem: detail.profile.numericalSystem,
       powerScaling: detail.profile.powerScaling,
       eraResearch: detail.profile.eraResearch ?? false,
@@ -265,11 +262,13 @@ export function GenreManager({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFu
         pacingRule: form.pacingRule,
         body: form.body,
       });
+      rememberCommaSeparated(form.chapterTypes, projectRoot, "genre", form.id, "chapterTypes");
+      rememberCommaSeparated(form.fatigueWords, projectRoot, "genre", form.id, "fatigueWords");
       setFormMode("hidden");
       setSelected(form.id);
       await refetch();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to create genre");
+      alert(e instanceof MixedCommaError ? t("genre.mixedCommas") : e instanceof Error ? e.message : "Failed to create genre");
     }
   };
 
@@ -294,10 +293,12 @@ export function GenreManager({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFu
           body: form.body,
         }),
       });
+      rememberCommaSeparated(form.chapterTypes, projectRoot, "genre", form.id, "chapterTypes");
+      rememberCommaSeparated(form.fatigueWords, projectRoot, "genre", form.id, "fatigueWords");
       setFormMode("hidden");
       await refetch();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to update genre");
+      alert(e instanceof MixedCommaError ? t("genre.mixedCommas") : e instanceof Error ? e.message : "Failed to update genre");
     }
   };
 

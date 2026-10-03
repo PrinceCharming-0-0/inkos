@@ -73,7 +73,7 @@ export async function listAvailableGenres(
       const raw = await tryReadFile(join(projectDir, file));
       if (!raw) continue;
       const parsed = parseGenreProfile(raw);
-      results.set(id, { id, name: parsed.profile.name, source: "project" });
+      results.set(id, { id, name: parsed.profile.name, source: parsed.profile.source ?? "project" });
     }
   } catch { /* no project genres dir */ }
 

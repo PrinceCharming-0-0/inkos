@@ -13,6 +13,7 @@ export const AudienceStyleTagSchema = z.object({
   name: z.string().trim().min(1),
   kind: z.enum(["audience", "style"]),
   language: z.enum(["zh", "en"]).default("zh"),
+  source: z.enum(["builtin", "project"]).optional(),
   description: z.string().optional(),
   readerExperience: z.string().optional(),
   narrativeStyle: z.string().optional(),

@@ -1104,7 +1104,26 @@ describe("createStudioServer daemon lifecycle", () => {
     await expect(project.json()).resolves.toMatchObject({
       language: "en",
       languageExplicit: true,
+      projectRoot: root,
     });
+  });
+
+  it("lists marked project genres as builtin and retains that marker on edit", async () => {
+    const { createStudioServer } = await import("./server.js");
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(join(root, "genres"), { recursive: true });
+    await writeFile(join(root, "genres", "marked-genre.md"), '---\nid: marked-genre\nname: Marked genre\nlanguage: zh\nsource: builtin\nchapterTypes: []\nfatigueWords: []\n---\nBody');
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const list = await app.request("http://localhost/api/v1/genres");
+    const data = await list.json() as { genres: Array<{ id: string; source: string }> };
+    expect(data.genres.find((genre) => genre.id === "marked-genre")?.source).toBe("builtin");
+    const update = await app.request("http://localhost/api/v1/genres/marked-genre", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: { id: "marked-genre", name: "Edited genre", language: "zh", chapterTypes: [], fatigueWords: [] }, body: "Edited body" }),
+    });
+    expect(update.status).toBe(200);
+    const detail = await app.request("http://localhost/api/v1/genres/marked-genre");
+    await expect(detail.json()).resolves.toMatchObject({ profile: { source: "builtin", name: "Edited genre" } });
   });
 
   it("writes parseable custom genre frontmatter when user text contains YAML punctuation", async () => {

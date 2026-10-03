@@ -48,7 +48,7 @@ import {
   Rows3,
   Film,
   Languages,
-  Tags,
+  Palette,
 } from "lucide-react";
 import { InkosLogo } from "./InkosLogo";
 
@@ -572,9 +572,9 @@ export function Sidebar({ nav, activePage, sse, t }: {
             />
             <SidebarItem
               label={t("audienceStyle.title")}
-              icon={<Tags size={16} />}
+              icon={<Palette size={16} />}
               active={activePage === "audience-style"}
-              onClick={nav.toAudienceStyle}
+              onClick={() => nav.toAudienceStyle()}
             />
             <SidebarItem
               label={t("nav.config")}

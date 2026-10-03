@@ -4180,6 +4180,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
 
     return c.json({
       name: currentConfig.name,
+      projectRoot: root,
       language: currentConfig.language,
       languageExplicit,
       model: currentConfig.llm.model,
@@ -6103,9 +6104,13 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     await mkdirFs(genresDir, { recursive: true });
 
     const p = body.profile;
+    const { readGenreProfile } = await import("@actalk/inkos-core");
+    const existing = await readGenreProfile(root, genreId);
+    const source = existing.profile.source;
     const frontmatter = [
       "---",
       `name: ${yamlScalar(p.name ?? genreId)}`,
+      ...(source ? [`source: ${source}`] : []),
       `id: ${yamlScalar(p.id ?? genreId)}`,
       `language: ${yamlScalar(p.language ?? "zh")}`,
       `chapterTypes: ${JSON.stringify(p.chapterTypes ?? [])}`,

@@ -278,6 +278,7 @@ const strings = {
   "genre.copyToProject": { zh: "复制到项目", en: "Copy to Project" },
   "genre.selectHint": { zh: "选择题材查看详情", en: "Select a genre to view details" },
   "genre.commaSeparated": { zh: "逗号分隔", en: "comma-separated" },
+  "genre.mixedCommas": { zh: "同一字段请统一使用中文逗号或英文逗号，不能混用。", en: "Use either Chinese or English commas within each field; do not mix them." },
   "genre.rulesMd": { zh: "规则（Markdown）", en: "Rules (Markdown)" },
 
   // Config extras
