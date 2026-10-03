@@ -1274,6 +1274,7 @@ async function executeConfirmedProductionAction(args: {
     params = {
       agent,
       instruction: args.instruction,
+      actionPayload,
       title,
       ...(payload?.genre ? { genre: payload.genre } : {}),
       ...(payload?.platform ? { platform: payload.platform } : {}),

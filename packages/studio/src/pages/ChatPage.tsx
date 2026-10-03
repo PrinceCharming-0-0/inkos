@@ -20,7 +20,7 @@ import {
 } from "../components/ai-elements/reasoning";
 import { ChatMessage } from "../components/chat/ChatMessage";
 import { QuickActions } from "../components/chat/QuickActions";
-import { ToolExecutionSteps, type ProposedActionDetails } from "../components/chat/ToolExecutionSteps";
+import { ToolExecutionSteps, type ProposedActionDetails, type ProductionRestartDetails } from "../components/chat/ToolExecutionSteps";
 import {
   buildNarrativeForecastRecheckInstruction,
   buildNarrativeForecastSelectionInstruction,
@@ -320,6 +320,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
   const loadSessionList = useChatStore((s) => s.loadSessionList);
   const createSession = useChatStore((s) => s.createSession);
   const markProposalResolved = useChatStore((s) => s.markProposalResolved);
+  const restartProductionTask = useChatStore((s) => s.restartProductionTask);
   const loadSessionDetail = useChatStore((s) => s.loadSessionDetail);
   const activateSession = useChatStore((s) => s.activateSession);
   const setSessionPlayMode = useChatStore((s) => s.setSessionPlayMode);
@@ -686,6 +687,11 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
     });
   };
 
+  const handleRestartProduction = async (details: ProductionRestartDetails) => {
+    if (!activeSessionId) return;
+    autoScrollPinnedRef.current = true;
+    await restartProductionTask(activeSessionId, details);
+  };
   const handleRejectProposedAction = async (details: ProposedActionDetails) => {
     markProposalResolved(details.execId, "rejected");
     if (!activeSessionId) return;
@@ -897,6 +903,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                               onOpenFilmStudio={nav.toFilmStudio}
                               onSelectNarrativeBranch={handleSelectNarrativeBranch}
                               onRecheckNarrativeForecast={handleRecheckNarrativeForecast}
+                              onRestartProduction={handleRestartProduction}
                             />
                           );
                         }

@@ -3,6 +3,8 @@ import type { AssistantMessage, Model, Api } from "@mariozechner/pi-ai";
 import {
   __resetFixedTemperatureWarnings,
   chatCompletion,
+  guardAssistantMessageStream,
+  readStreamRetryOptions,
   type LLMClient,
 } from "../llm/provider.js";
 import { runWithAgentTrajectory } from "../llm/agent-trajectory.js";
@@ -1263,7 +1265,33 @@ describe("createLLMClient custom anthropic apiFormat routes to Anthropic Message
   });
 });
 
+
 describe("stream interruption detection", () => {
+  it("retries a guarded stream idle timeout before the first visible output", async () => {
+    const starts: AbortSignal[] = [];
+    const stream = guardAssistantMessageStream(
+      MOCK_PI_MODEL,
+      (signal) => {
+        starts.push(signal);
+        if (starts.length === 1) {
+          return {
+            [Symbol.asyncIterator]: () => ({
+              next: () => new Promise<IteratorResult<never>>(() => undefined),
+            }),
+          } as never;
+        }
+        return makeTextStream("retry ok") as never;
+      },
+      undefined,
+      { firstEventTimeoutMs: 5, idleTimeoutMs: 5 },
+    );
+    const events: Array<{ type: string; error?: { errorMessage?: string } }> = [];
+    for await (const event of stream) events.push(event as typeof events[number]);
+    expect(starts).toHaveLength(2);
+    expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(events.some((event) => event.error?.errorMessage?.includes("timeout"))).toBe(false);
+  });
+
   beforeEach(() => {
     // mockStreamSimple 是模块级共享 mock，清掉前面测试累积的调用计数和队列
     mockStreamSimple.mockClear();
@@ -1341,9 +1369,71 @@ describe("stream interruption detection", () => {
     vi.unstubAllGlobals();
   });
 
+  it("does not replay a guarded stream after visible text or a tool call has started", async () => {
+    let textStarts = 0;
+    const textStream = guardAssistantMessageStream(MOCK_PI_MODEL, () => {
+      textStarts += 1;
+      return {
+        [Symbol.asyncIterator]: () => {
+          let index = 0;
+          return { next: () => index++ === 0
+            ? Promise.resolve({ value: { type: "text_delta", delta: "已经显示" }, done: false })
+            : new Promise<IteratorResult<never>>(() => undefined) };
+        },
+      } as never;
+    }, undefined, { firstEventTimeoutMs: 5, idleTimeoutMs: 5 });
+    const textEvents: unknown[] = [];
+    for await (const event of textStream) textEvents.push(event);
+    expect(textStarts).toBe(1);
+    expect(textEvents.some((event: any) => event.type === "error")).toBe(true);
+
+    let toolStarts = 0;
+    const toolStream = guardAssistantMessageStream(MOCK_PI_MODEL, () => {
+      toolStarts += 1;
+      return {
+        [Symbol.asyncIterator]: () => {
+          let index = 0;
+          return {
+            next: () => index++ === 0
+              ? Promise.resolve({ value: { type: "toolcall_start", toolCallId: "tool-1" }, done: false })
+              : new Promise<IteratorResult<never>>(() => undefined),
+          };
+        },
+      } as never;
+    }, undefined, { firstEventTimeoutMs: 5, idleTimeoutMs: 5 });
+    for await (const _event of toolStream) { /* drain */ }
+    expect(toolStarts).toBe(1);
+  });
+
+  it("reads bounded stream retry defaults and environment overrides", () => {
+    const previous = {
+      enabled: process.env.INKOS_LLM_STREAM_RETRY_ENABLED,
+      max: process.env.INKOS_LLM_STREAM_MAX_RETRIES,
+      initial: process.env.INKOS_LLM_STREAM_RETRY_INITIAL_BACKOFF_MS,
+      maxBackoff: process.env.INKOS_LLM_STREAM_RETRY_MAX_BACKOFF_MS,
+    };
+    delete process.env.INKOS_LLM_STREAM_RETRY_ENABLED;
+    delete process.env.INKOS_LLM_STREAM_MAX_RETRIES;
+    delete process.env.INKOS_LLM_STREAM_RETRY_INITIAL_BACKOFF_MS;
+    delete process.env.INKOS_LLM_STREAM_RETRY_MAX_BACKOFF_MS;
+    expect(readStreamRetryOptions()).toEqual({ enabled: true, maxRetries: 2, initialBackoffMs: 800, maxBackoffMs: 5000 });
+    process.env.INKOS_LLM_STREAM_RETRY_ENABLED = "false";
+    process.env.INKOS_LLM_STREAM_MAX_RETRIES = "0";
+    process.env.INKOS_LLM_STREAM_RETRY_INITIAL_BACKOFF_MS = "12";
+    process.env.INKOS_LLM_STREAM_RETRY_MAX_BACKOFF_MS = "34";
+    expect(readStreamRetryOptions()).toEqual({ enabled: false, maxRetries: 0, initialBackoffMs: 12, maxBackoffMs: 34 });
+    for (const [key, value] of Object.entries({
+      INKOS_LLM_STREAM_RETRY_ENABLED: previous.enabled,
+      INKOS_LLM_STREAM_MAX_RETRIES: previous.max,
+      INKOS_LLM_STREAM_RETRY_INITIAL_BACKOFF_MS: previous.initial,
+      INKOS_LLM_STREAM_RETRY_MAX_BACKOFF_MS: previous.maxBackoff,
+    })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+
   it("rejects a native chat stream that reaches the output limit", async () => {
     const sse = [
-      "data: {\"choices\":[{\"delta\":{\"content\":\"写到上限的正文\"}}]}\n\n",
       "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
       "data: [DONE]\n\n",
     ].join("");

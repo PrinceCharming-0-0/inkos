@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ToolExecution } from "../../../store/chat/types";
-import { PipelineResultDetails, ToolExecutionSteps, UtilityExecutionRow, buildPlayRunStatusUrl, buildPlaySceneImageUrl, getChapterContextTraceDetails, getChapterRevisionDetails, getChapterStateResyncDetails, getExecutionSkillIds, getGeneratedArtifactDetails, getPlayEditDetails, getPlayToolDetails, getProposedActionContractRows, getProposedActionDetails, groupToolExecutionsChronologically } from "../ToolExecutionSteps";
+import { PipelineResultDetails, ToolExecutionSteps, UtilityExecutionRow, buildPlayRunStatusUrl, buildPlaySceneImageUrl, buildEditedCreateBookDetails, getProductionRestartDetails, getChapterContextTraceDetails, getChapterRevisionDetails, getChapterStateResyncDetails, getExecutionSkillIds, getGeneratedArtifactDetails, getPlayEditDetails, getPlayToolDetails, getProposedActionContractRows, getProposedActionDetails, groupToolExecutionsChronologically } from "../ToolExecutionSteps";
 import { usePreferencesStore } from "../../../store/preferences";
 import { setAppLanguage } from "../../../lib/app-language";
 
@@ -531,6 +531,71 @@ describe("groupChronologically", () => {
     });
   });
 
+  it("builds edited create-book values into the execution payload and retains unknown text", () => {
+    const details = getProposedActionDetails(makeExec({
+      id: "proposal-create-book",
+      tool: "propose_action",
+      details: {
+        kind: "proposed_action",
+        action: "create_book",
+        targetSessionKind: "book-create",
+        title: "建书确认",
+        instruction: "世界观：浮空城；主角：修理师；核心冲突：能源枯竭；额外要求：保留方言",
+        actionPayload: { createBook: { title: "旧书名", genre: "fantasy", targetChapters: 80, customSetting: { city: "云城" } } },
+      },
+    }));
+    const edited = buildEditedCreateBookDetails(details!, {
+      instruction: "世界观：浮空城；主角：修理师；核心冲突：能源枯竭；额外要求：保留方言",
+      title: "新书名",
+      genre: "mystery",
+      platform: "qidian",
+      language: "zh",
+      targetChapters: "120",
+      chapterWordCount: "2000",
+      storyFields: { 世界观: "海底城", 主角: "潜水员", 核心冲突: "潮汐能源枯竭" },
+      extraFields: { customSetting: "额外城市设定" },
+    });
+    expect(edited.actionPayload?.createBook).toEqual({
+      title: "新书名", genre: "mystery", platform: "qidian", language: "zh", targetChapters: 120, chapterWordCount: 2000,
+    });
+    expect(edited.instruction).toContain("世界观：海底城");
+    expect(edited.instruction).toContain("主角：潜水员");
+    expect(edited.instruction).toContain("核心冲突：潮汐能源枯竭");
+    expect(edited.instruction).toContain("customSetting：额外城市设定");
+  });
+  it("offers the original confirmed create-book payload after a user stop", () => {
+    const details = getProductionRestartDetails(makeExec({
+      id: "stopped-create-book",
+      tool: "sub_agent",
+      agent: "architect",
+      status: "error",
+      background: true,
+      error: "已由用户停止",
+      args: {
+        instruction: "世界观：浮空城；主角：修理师；核心冲突：能源枯竭",
+        title: "浮空城",
+        genre: "fantasy",
+        targetChapters: 80,
+        actionPayload: { createBook: { title: "浮空城", genre: "fantasy", targetChapters: 80 } },
+      },
+    }));
+    expect(details).toEqual(expect.objectContaining({
+      requestedIntent: "create_book",
+      instruction: "世界观：浮空城；主角：修理师；核心冲突：能源枯竭",
+      actionPayload: { createBook: { title: "浮空城", genre: "fantasy", targetChapters: 80 } },
+    }));
+  });
+
+  it("does not offer production restart for completed or genuine failures", () => {
+    expect(getProductionRestartDetails(makeExec({
+      id: "completed-create-book", tool: "sub_agent", agent: "architect", status: "completed", background: true,
+      args: { actionPayload: { createBook: { title: "完成" } } },
+    }))).toBeNull();
+    expect(getProductionRestartDetails(makeExec({
+      id: "failed-create-book", tool: "sub_agent", agent: "architect", status: "error", background: true,
+      error: "503 upstream unavailable", args: { actionPayload: { createBook: { title: "失败" } } },
+    }))).toBeNull();
+  });
   it("extracts Play world and visual contracts for confirmation cards", () => {
     const exec = makeExec({
       id: "proposal-play-contract",

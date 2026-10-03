@@ -45,11 +45,39 @@ const DEFAULT_FIRST_STREAM_EVENT_TIMEOUT_MS = 120_000;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 90_000;
 const DEFAULT_PIPELINE_FIRST_STREAM_EVENT_TIMEOUT_MS = 300_000;
 const DEFAULT_PIPELINE_STREAM_IDLE_TIMEOUT_MS = 180_000;
+const DEFAULT_STREAM_RETRY_ENABLED = true;
+const DEFAULT_STREAM_MAX_RETRIES = 2;
+const DEFAULT_STREAM_RETRY_INITIAL_BACKOFF_MS = 800;
+const DEFAULT_STREAM_RETRY_MAX_BACKOFF_MS = 5_000;
 
 export interface StreamDeadlineOptions {
   readonly firstEventTimeoutMs?: number;
   readonly idleTimeoutMs?: number;
 }
+
+export interface StreamRetryOptions {
+  readonly enabled?: boolean;
+  readonly maxRetries?: number;
+  readonly initialBackoffMs?: number;
+  readonly maxBackoffMs?: number;
+}
+
+function readNonNegativeInteger(value: string | number | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
+export function readStreamRetryOptions(): Required<StreamRetryOptions> {
+  const enabled = process.env.INKOS_LLM_STREAM_RETRY_ENABLED;
+  return {
+    enabled: enabled === undefined ? DEFAULT_STREAM_RETRY_ENABLED : enabled === "1" || enabled.toLowerCase() === "true",
+    maxRetries: readNonNegativeInteger(process.env.INKOS_LLM_STREAM_MAX_RETRIES, DEFAULT_STREAM_MAX_RETRIES),
+    initialBackoffMs: readNonNegativeInteger(process.env.INKOS_LLM_STREAM_RETRY_INITIAL_BACKOFF_MS, DEFAULT_STREAM_RETRY_INITIAL_BACKOFF_MS),
+    maxBackoffMs: readNonNegativeInteger(process.env.INKOS_LLM_STREAM_RETRY_MAX_BACKOFF_MS, DEFAULT_STREAM_RETRY_MAX_BACKOFF_MS),
+  };
+}
+
+
 
 export class LLMStreamInactivityError extends Error {
   constructor(
@@ -128,50 +156,88 @@ export function guardAssistantMessageStream<TApi extends PiApi>(
   deadlineOptions?: StreamDeadlineOptions,
 ): AssistantMessageEventStream {
   const guarded = createAssistantMessageEventStream();
-  const deadline = createStreamActivityDeadline(callerSignal, undefined, deadlineOptions);
-
   void (async () => {
-    let terminalSeen = false;
-    try {
-      const upstream = start(deadline.signal);
-      const iterator = upstream[Symbol.asyncIterator]();
-      while (true) {
-        const next = await nextWithAbort(iterator, deadline.signal);
-        if (next.done) break;
-        const event = next.value;
-        deadline.activity();
-        terminalSeen ||= event.type === "done" || event.type === "error";
-        guarded.push(event);
+    const retry = readStreamRetryOptions();
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= retry.maxRetries; attempt += 1) {
+      const deadline = createStreamActivityDeadline(callerSignal, undefined, deadlineOptions);
+      let terminalSeen = false;
+      let hasVisibleOutput = false;
+      try {
+        const upstream = start(deadline.signal);
+        const iterator = upstream[Symbol.asyncIterator]();
+        while (true) {
+          const next = await nextWithAbort(iterator, deadline.signal);
+          if (next.done) break;
+          const event = next.value as AssistantMessageEvent & { error?: unknown };
+          const eventType = String((event as { type?: unknown }).type ?? "");
+          const delta = (event as { delta?: unknown }).delta;
+          if ((eventType === "text_delta" && typeof delta === "string" && delta.length > 0)
+            || eventType.startsWith("toolcall")) {
+            hasVisibleOutput = true;
+          }
+          if (eventType === "error") {
+            const eventError = (event as { error?: unknown }).error;
+            if (eventError instanceof Error) throw eventError;
+            if (eventError && typeof eventError === "object") {
+              const structured = eventError as { errorMessage?: unknown; message?: unknown };
+              throw new Error(
+                typeof structured.errorMessage === "string"
+                  ? structured.errorMessage
+                  : typeof structured.message === "string" ? structured.message : String(eventError),
+              );
+            }
+            throw new Error(String(eventError ?? "LLM stream error"));
+          }
+          deadline.activity();
+          terminalSeen ||= eventType === "done";
+          guarded.push(event);
+        }
+        if (!terminalSeen) throw new Error("LLM stream ended without a terminal event");
+        return;
+      } catch (error) {
+        lastError = deadline.timeoutError() ?? error;
+        const canRetry = retry.enabled
+          && !callerSignal?.aborted
+          && !hasVisibleOutput
+          && attempt < retry.maxRetries
+          && isRetryableLLMError(lastError);
+        if (!canRetry) break;
+        const delayMs = Math.min(retry.maxBackoffMs, retry.initialBackoffMs * 2 ** attempt);
+        try {
+          await abortableDelay(delayMs, callerSignal);
+        } catch (delayError) {
+          lastError = delayError;
+          break;
+        }
+      } finally {
+        deadline.stop();
       }
-      if (!terminalSeen) throw new Error("LLM stream ended without a terminal event");
-    } catch (error) {
-      const resolved = deadline.timeoutError() ?? error;
-      const message: AssistantMessage = {
-        role: "assistant",
-        content: [],
-        api: model.api,
-        provider: model.provider,
-        model: model.id,
-        usage: {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 0,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-        },
-        stopReason: callerSignal?.aborted ? "aborted" : "error",
-        errorMessage: resolved instanceof Error ? resolved.message : String(resolved),
-        timestamp: Date.now(),
-      };
-      guarded.push({
-        type: "error",
-        reason: message.stopReason === "aborted" ? "aborted" : "error",
-        error: message,
-      });
-    } finally {
-      deadline.stop();
     }
+    const resolved = lastError ?? new Error("LLM stream failed");
+    const message: AssistantMessage = {
+      role: "assistant",
+      content: [],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: callerSignal?.aborted ? "aborted" : "error",
+      errorMessage: resolved instanceof Error ? resolved.message : String(resolved),
+      timestamp: Date.now(),
+    };
+    guarded.push({
+      type: "error",
+      reason: message.stopReason === "aborted" ? "aborted" : "error",
+      error: message,
+    });
   })();
 
   return guarded;
@@ -611,6 +677,26 @@ export function assertWithinContextWindow(params: {
 
 // === Error Wrapping ===
 
+function retryAfterMs(error: unknown): number | undefined {
+  const value = error && typeof error === "object" ? (error as { retryAfterMs?: unknown }).retryAfterMs : undefined;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function wrapLLMErrorWithRetryAfter(
+  error: unknown,
+  response: Response,
+  context?: { readonly baseUrl?: string; readonly model?: string; readonly service?: string },
+): Error {
+  const wrapped = wrapLLMError(error, context);
+  const header = response.headers.get("retry-after");
+  const seconds = header === null ? NaN : Number(header);
+  const retryAfter = header === null ? undefined : Number.isFinite(seconds)
+    ? Math.max(0, Math.round(seconds * 1000))
+    : Math.max(0, Date.parse(header) - Date.now());
+  if (retryAfter !== undefined && Number.isFinite(retryAfter)) Object.defineProperty(wrapped, "retryAfterMs", { value: retryAfter, enumerable: false });
+  return wrapped;
+}
+
 function wrapLLMError(error: unknown, context?: { readonly baseUrl?: string; readonly model?: string; readonly service?: string }): Error {
   const msg = String(error);
   const ctxLine = context
@@ -769,7 +855,8 @@ function isIncompleteLLMResponseError(error: unknown): boolean {
 function isRetryableLLMError(error: unknown): boolean {
   // PartialResponseError = 流在生成中途被掐断（网关切长连接等）。重试会完整
   // 重新生成一次，比把半截内容当成功交付（截断的章节/设定文件）要正确。
-  return error instanceof PartialResponseError
+  return error instanceof LLMStreamInactivityError
+    || error instanceof PartialResponseError
     || isIncompleteLLMResponseError(error)
     || isTransientLLMTransportError(error)
     || isTransientLLMHttpError(error);
@@ -796,7 +883,8 @@ async function withTransientLLMRetry<T>(
       }
       // Back off before retrying — immediate re-fire on a 429/503 just makes it
       // worse. Linear is enough for a 2-retry budget (~0.8s, ~1.6s).
-      await abortableDelay(800 * (attempt + 1), options?.signal);
+      // Prefer the provider's Retry-After when the transport exposes it.
+      await abortableDelay(retryAfterMs(lastError) ?? 800 * (attempt + 1), options?.signal);
     }
   }
   throw lastError;
@@ -1089,7 +1177,7 @@ async function chatCompletionViaCustomAnthropicCompatible(
   }, client.proxyUrl);
 
   if (!response.ok) {
-    throw wrapLLMError(new Error(await readErrorResponse(response)), errorCtx);
+    throw wrapLLMErrorWithRetryAfter(new Error(await readErrorResponse(response)), response, errorCtx);
   }
 
   if (!client.stream) {
@@ -1212,7 +1300,7 @@ async function chatCompletionViaCustomOpenAICompatible(
       signal,
     }, client.proxyUrl);
     if (!response.ok) {
-      throw wrapLLMError(new Error(await readErrorResponse(response)), errorCtx);
+      throw wrapLLMErrorWithRetryAfter(new Error(await readErrorResponse(response)), response, errorCtx);
     }
 
     if (!client.stream) {
@@ -1328,7 +1416,7 @@ async function chatCompletionViaCustomOpenAICompatible(
         false,
       );
     }
-    throw wrapLLMError(new Error(detail), errorCtx);
+    throw wrapLLMErrorWithRetryAfter(new Error(detail), response, errorCtx);
   }
 
   if (!client.stream) {

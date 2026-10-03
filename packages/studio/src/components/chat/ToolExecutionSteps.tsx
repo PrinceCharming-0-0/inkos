@@ -17,6 +17,8 @@ import { buildApiUrl } from "../../hooks/use-api";
 import { tr } from "../../lib/app-language";
 import { chatSelectors, useChatStore } from "../../store/chat";
 import { usePreferencesStore } from "../../store/preferences";
+import { Input } from "../ui/input";
+import { Textarea } from "../ui/textarea";
 import {
   NarrativeForecastPreview,
   getNarrativeForecastPreviewDetails,
@@ -745,7 +747,7 @@ export function getProposedActionDetails(exec: ToolExecution): ProposedActionDet
   const action = stringField(record, "action") as ChatRequestedIntent | undefined;
   const targetSessionKind = stringField(record, "targetSessionKind") as ChatSessionKind | undefined;
   const instruction = stringField(record, "instruction");
-  if (!action || !targetSessionKind || !instruction) return null;
+  if (!action || !targetSessionKind) return null;
   return {
     kind: "proposed_action",
     execId: exec.id,
@@ -771,6 +773,163 @@ export function getProposedActionContractRows(details: ProposedActionDetails): R
   return rows;
 }
 
+const createBookFieldLabels = ["世界观", "主角", "核心冲突"] as const;
+const createBookPayloadKeys = new Set(["title", "genre", "platform", "language", "targetChapters", "chapterWordCount"]);
+type CreateBookField = (typeof createBookFieldLabels)[number];
+
+interface CreateBookProposalDraft {
+  readonly instruction: string;
+  readonly title: string;
+  readonly genre: string;
+  readonly platform: string;
+  readonly language: string;
+  readonly targetChapters: string;
+  readonly chapterWordCount: string;
+  readonly storyFields: Record<CreateBookField, string>;
+  readonly extraFields: Record<string, string>;
+}
+
+function createBookPayloadRecord(details: ProposedActionDetails): Record<string, unknown> {
+  const value = details.actionPayload?.createBook;
+  return value && typeof value === "object" ? { ...(value as unknown as Record<string, unknown>) } : {};
+}
+
+function readInstructionField(instruction: string, label: string): string {
+  const labels = [...createBookFieldLabels, "额外要求"].join("|");
+  const match = instruction.match(new RegExp(`${label}\\s*[:：]\\s*([\\s\\S]*?)(?=\\s*(?:[；;]\\s*|\\n\\s*)(?:${labels})\\s*[:：]|$)`));
+  return match?.[1]?.trim().replace(/[；;]$/, "").trim() ?? "";
+}
+
+function replaceInstructionField(instruction: string, label: string, value: string): string {
+  const labels = [...createBookFieldLabels, "额外要求"].join("|");
+  const pattern = new RegExp(`(${label}\\s*[:：]\\s*)[\\s\\S]*?(?=\\s*(?:[；;]\\s*|\\n\\s*)(?:${labels})\\s*[:：]|$)`);
+  if (pattern.test(instruction)) return instruction.replace(pattern, (_match, prefix: string) => `${prefix}${value}`);
+  return `${instruction.trim()}\\n${label}：${value}`.trim();
+}
+
+function formatExtraFieldValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function createBookProposalDraft(details: ProposedActionDetails): CreateBookProposalDraft {
+  const payload = createBookPayloadRecord(details);
+  const storyFields = Object.fromEntries(
+    createBookFieldLabels.map((label) => [label, readInstructionField(details.instruction ?? "", label)]),
+  ) as Record<CreateBookField, string>;
+  const extraFields = Object.fromEntries(
+    Object.entries(payload)
+      .filter(([key]) => !createBookPayloadKeys.has(key))
+      .map(([key, value]) => [key, formatExtraFieldValue(value)]),
+  );
+  return {
+    instruction: details.instruction ?? "",
+    title: typeof payload.title === "string" ? payload.title : details.title ?? "",
+    genre: typeof payload.genre === "string" ? payload.genre : "",
+    platform: typeof payload.platform === "string" ? payload.platform : "",
+    language: typeof payload.language === "string" ? payload.language : "",
+    targetChapters: typeof payload.targetChapters === "number" ? String(payload.targetChapters) : "",
+    chapterWordCount: typeof payload.chapterWordCount === "number" ? String(payload.chapterWordCount) : "",
+    storyFields,
+    extraFields,
+  };
+}
+
+export function buildEditedCreateBookDetails(details: ProposedActionDetails, draft: CreateBookProposalDraft): ProposedActionDetails {
+  const knownValues: Record<string, unknown> = {
+    title: draft.title.trim(),
+    genre: draft.genre.trim(),
+    platform: draft.platform,
+    language: draft.language,
+    targetChapters: draft.targetChapters.trim() ? Number(draft.targetChapters) : undefined,
+    chapterWordCount: draft.chapterWordCount.trim() ? Number(draft.chapterWordCount) : undefined,
+  };
+  const createBook: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(knownValues)) {
+    if (value !== undefined && value !== "" && !(typeof value === "number" && !Number.isFinite(value))) createBook[key] = value;
+  }
+  let instruction = draft.instruction;
+  for (const label of createBookFieldLabels) {
+    instruction = replaceInstructionField(instruction, label, draft.storyFields[label].trim());
+  }
+  for (const [label, value] of Object.entries(draft.extraFields)) {
+    instruction = replaceInstructionField(instruction, label, value.trim());
+  }
+  const nextActionPayload = { ...(details.actionPayload ?? {}), createBook } as ChatActionPayload;
+  return { ...details, instruction, actionPayload: nextActionPayload };
+}
+
+function CreateBookProposalEditor({
+  details,
+  draft,
+  disabled,
+  onChange,
+}: {
+  details: ProposedActionDetails;
+  draft: CreateBookProposalDraft;
+  disabled: boolean;
+  onChange: (draft: CreateBookProposalDraft) => void;
+}) {
+  const setField = (key: keyof CreateBookProposalDraft, value: string) => onChange({ ...draft, [key]: value });
+  const setStoryField = (key: CreateBookField, value: string) => onChange({
+    ...draft,
+    storyFields: { ...draft.storyFields, [key]: value },
+  });
+  const setExtraField = (key: string, value: string) => onChange({
+    ...draft,
+    extraFields: { ...draft.extraFields, [key]: value },
+  });
+  const fieldClass = "mt-1 min-h-8 min-w-0 max-w-full overflow-hidden text-sm";
+  const labelClass = "min-w-0 break-words overflow-hidden text-xs font-semibold text-foreground";
+  return (
+    <div className="mt-2 space-y-3" data-testid="create-book-editor">
+      <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
+        <label className={labelClass} htmlFor={`${details.execId}-title`}>{tr("书名", "Book title")}
+          <Input id={`${details.execId}-title`} aria-label="Book title" className={fieldClass} value={draft.title} disabled={disabled} onChange={(event) => setField("title", event.target.value)} />
+        </label>
+        <label className={labelClass} htmlFor={`${details.execId}-genre`}>{tr("题材", "Genre")}
+          <Input id={`${details.execId}-genre`} aria-label="Genre" className={fieldClass} value={draft.genre} disabled={disabled} onChange={(event) => setField("genre", event.target.value)} />
+        </label>
+        <label className={labelClass} htmlFor={`${details.execId}-platform`}>{tr("平台", "Platform")}
+          <select id={`${details.execId}-platform`} aria-label="Platform" className="mt-1 h-8 min-w-0 w-full max-w-full overflow-hidden rounded-lg border border-input bg-background px-2 text-sm" value={draft.platform} disabled={disabled} onChange={(event) => setField("platform", event.target.value)}>
+            <option value="">{tr("未指定", "Unspecified")}</option><option value="tomato">番茄 / Tomato</option><option value="qidian">起点 / Qidian</option><option value="feilu">飞卢 / Feilu</option><option value="other">{tr("其他", "Other")}</option>
+          </select>
+        </label>
+        <label className={labelClass} htmlFor={`${details.execId}-language`}>{tr("语言", "Language")}
+          <select id={`${details.execId}-language`} aria-label="Language" className="mt-1 h-8 min-w-0 w-full max-w-full overflow-hidden rounded-lg border border-input bg-background px-2 text-sm" value={draft.language} disabled={disabled} onChange={(event) => setField("language", event.target.value)}>
+            <option value="">{tr("未指定", "Unspecified")}</option><option value="zh">中文 / Chinese</option><option value="en">English</option>
+          </select>
+        </label>
+        <label className={labelClass} htmlFor={`${details.execId}-chapters`}>{tr("目标篇幅（章）", "Target chapters")}
+          <Input id={`${details.execId}-chapters`} aria-label="Target chapters" type="number" min={1} className={fieldClass} value={draft.targetChapters} disabled={disabled} onChange={(event) => setField("targetChapters", event.target.value)} />
+        </label>
+        <label className={labelClass} htmlFor={`${details.execId}-words`}>{tr("每章字数", "Words per chapter")}
+          <Input id={`${details.execId}-words`} aria-label="Words per chapter" type="number" min={1} className={fieldClass} value={draft.chapterWordCount} disabled={disabled} onChange={(event) => setField("chapterWordCount", event.target.value)} />
+        </label>
+      </div>
+      <div className="grid min-w-0 grid-cols-1 gap-2">
+        {createBookFieldLabels.map((label) => (
+          <label className={labelClass} htmlFor={`${details.execId}-${label}`} key={label}>{label}
+            <Textarea id={`${details.execId}-${label}`} aria-label={label} className="mt-1 min-h-16 min-w-0 max-w-full overflow-hidden resize-y text-sm leading-6" value={draft.storyFields[label]} disabled={disabled} onChange={(event) => setStoryField(label, event.target.value)} />
+          </label>
+        ))}
+      </div>
+      <label className={labelClass} htmlFor={`${details.execId}-instruction`}>{tr("建书说明", "Creation instruction")}
+        <Textarea id={`${details.execId}-instruction`} aria-label="Creation instruction" className="mt-1 min-h-24 min-w-0 max-w-full overflow-hidden resize-y text-sm leading-6" value={draft.instruction} disabled={disabled} onChange={(event) => setField("instruction", event.target.value)} />
+      </label>
+      {Object.entries(draft.extraFields).map(([key, value]) => (
+        <label className={labelClass} htmlFor={`${details.execId}-extra-${key}`} key={key}>{key}
+          <Textarea id={`${details.execId}-extra-${key}`} aria-label={key} className="mt-1 min-h-16 min-w-0 max-w-full overflow-hidden resize-y font-mono text-xs leading-5" value={value} disabled={disabled} onChange={(event) => setExtraField(key, event.target.value)} />
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function ProposedActionPreview({
   exec,
   onProposedAction,
@@ -782,8 +941,15 @@ function ProposedActionPreview({
 }) {
   const resolvedProposals = useChatStore((s) => s.resolvedProposals);
   const isActiveSessionStreaming = useChatStore(chatSelectors.isActiveSessionStreaming);
-  if (exec.tool !== "propose_action" || exec.status !== "completed") return null;
   const details = getProposedActionDetails(exec);
+  const [draft, setDraft] = useState<CreateBookProposalDraft>(() => details ? createBookProposalDraft(details) : {
+    instruction: "", title: "", genre: "", platform: "", language: "", targetChapters: "", chapterWordCount: "",
+    storyFields: { 世界观: "", 主角: "", 核心冲突: "" }, extraFields: {},
+  });
+  useEffect(() => {
+    if (details) setDraft(createBookProposalDraft(details));
+  }, [details?.execId]);
+  if (exec.tool !== "propose_action" || exec.status !== "completed") return null;
   if (!details) return null;
   // A proposed action is one-shot: once confirmed or rejected the card locks so
   // the production action can't be re-fired. While a run is in flight the
@@ -792,15 +958,22 @@ function ProposedActionPreview({
   const streaming = isActiveSessionStreaming;
   const locked = resolution !== undefined;
   const contractRows = getProposedActionContractRows(details);
+  const editedDetails = details.action === "create_book"
+    ? buildEditedCreateBookDetails(details, draft)
+    : details;
   return (
     <div className="mx-3 mb-3 mt-1 rounded-xl border border-primary/25 bg-primary/5 px-4 py-3.5">
       <div className="text-[17px] leading-6 font-semibold text-foreground">{details.title ?? tr("确认执行", "Confirm action")}</div>
       {details.summary && (
         <div className="mt-1.5 whitespace-pre-wrap break-words text-[15px] leading-7 text-muted-foreground">{details.summary}</div>
       )}
-      <div className="mt-2.5 whitespace-pre-wrap break-words rounded-lg bg-background/70 px-3 py-2.5 text-[15px] leading-7 text-muted-foreground">
-        {details.instruction}
-      </div>
+      {details.action === "create_book" ? (
+        <CreateBookProposalEditor details={details} draft={draft} disabled={locked || streaming} onChange={setDraft} />
+      ) : (
+        <div className="mt-2.5 whitespace-pre-wrap break-words rounded-lg bg-background/70 px-3 py-2.5 text-[15px] leading-7 text-muted-foreground">
+          {details.instruction}
+        </div>
+      )}
       {contractRows.length > 0 && (
         <div className="mt-2 space-y-1.5">
           {contractRows.map((row) => (
@@ -823,7 +996,7 @@ function ProposedActionPreview({
           <button
             type="button"
             data-testid="confirm-action"
-            onClick={() => onProposedAction?.(details)}
+            onClick={() => onProposedAction?.(editedDetails)}
             disabled={!onProposedAction || streaming || locked}
             className="rounded-lg bg-primary px-3.5 py-2 text-[15px] leading-6 font-medium text-primary-foreground disabled:opacity-50"
           >
@@ -952,6 +1125,22 @@ export function PipelineResultDetails({ result, defaultOpen }: { result: string;
   );
 }
 
+export interface ProductionRestartDetails {
+  readonly requestedIntent: "create_book";
+  readonly instruction: string;
+  readonly actionPayload: ChatActionPayload;
+}
+
+export function getProductionRestartDetails(exec: ToolExecution): ProductionRestartDetails | null {
+  if (exec.status !== "error" || exec.background !== true || exec.tool !== "sub_agent" || exec.agent !== "architect") return null;
+  if (exec.error !== tr("已由用户停止", "Stopped by user")) return null;
+  const args = exec.args;
+  const actionPayload = args?.actionPayload;
+  if (!args || typeof args.instruction !== "string" || !actionPayload || typeof actionPayload !== "object") return null;
+  const createBook = (actionPayload as ChatActionPayload).createBook;
+  if (!createBook || typeof createBook !== "object" || typeof createBook.title !== "string" || !createBook.title.trim()) return null;
+  return { requestedIntent: "create_book", instruction: args.instruction, actionPayload: actionPayload as ChatActionPayload };
+}
 function PipelineExecution({
   exec,
   onProposedAction,
@@ -959,10 +1148,12 @@ function PipelineExecution({
   onOpenFilmStudio,
   onSelectNarrativeBranch,
   onRecheckNarrativeForecast,
+  onRestartProduction,
 }: {
   exec: ToolExecution;
   onProposedAction?: (details: ProposedActionDetails) => void;
   onRejectProposedAction?: (details: ProposedActionDetails) => void;
+  onRestartProduction?: (details: ProductionRestartDetails) => void;
   onOpenFilmStudio?: (projectId: string) => void;
   onSelectNarrativeBranch?: (forecastId: string, branchId: string) => void | Promise<void>;
   onRecheckNarrativeForecast?: (forecastId: string) => void | Promise<void>;
@@ -982,6 +1173,7 @@ function PipelineExecution({
 
   const bookId = exec.args?.bookId as string | undefined;
   const forecastDetails = getNarrativeForecastPreviewDetails(exec);
+  const restartDetails = getProductionRestartDetails(exec);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="rounded-xl border border-border/40 bg-card/60">
@@ -1007,6 +1199,17 @@ function PipelineExecution({
         onProposedAction={onProposedAction}
         onRejectProposedAction={onRejectProposedAction}
       />
+      {restartDetails && onRestartProduction && (
+        <div className="mx-3 mb-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="rounded-lg border border-border/60 bg-secondary/40 px-3 py-1.5 text-sm font-medium hover:border-primary/50 hover:text-primary"
+            onClick={() => void onRestartProduction(restartDetails)}
+          >
+            {tr("重新开始建书", "Restart book creation")}
+          </button>
+        </div>
+      )}
       <SkillUsagePreview exec={exec} />
       <ShortFictionResultPreview exec={exec} />
       <ScriptStoryboardResultPreview exec={exec} onOpenFilmStudio={onOpenFilmStudio} />
@@ -1153,6 +1356,7 @@ export interface ToolExecutionStepsProps {
   onOpenFilmStudio?: (projectId: string) => void;
   onSelectNarrativeBranch?: (forecastId: string, branchId: string) => void | Promise<void>;
   onRecheckNarrativeForecast?: (forecastId: string) => void | Promise<void>;
+  onRestartProduction?: (details: ProductionRestartDetails) => void | Promise<void>;
 }
 
 /**
@@ -1193,6 +1397,7 @@ export const ToolExecutionSteps = memo(function ToolExecutionSteps({
   onOpenFilmStudio,
   onSelectNarrativeBranch,
   onRecheckNarrativeForecast,
+  onRestartProduction,
 }: ToolExecutionStepsProps) {
   const groups = useMemo(() => groupToolExecutionsChronologically(executions), [executions]);
 
@@ -1209,6 +1414,7 @@ export const ToolExecutionSteps = memo(function ToolExecutionSteps({
                 onOpenFilmStudio={onOpenFilmStudio}
                 onSelectNarrativeBranch={onSelectNarrativeBranch}
                 onRecheckNarrativeForecast={onRecheckNarrativeForecast}
+                onRestartProduction={onRestartProduction}
               />
             )
           : <UtilityToolsGroup key={`utils-${i}`} execs={g.execs} />

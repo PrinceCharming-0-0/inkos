@@ -327,7 +327,7 @@ export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
       className={cn(
-        "size-full text-[17px] leading-[1.72] font-['SimSun','Songti_SC','STSong',serif] [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&>p+p]:mt-4",
+        "size-full text-[17px] leading-[1.72] font-['SimSun','Songti_SC','STSong',serif] [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&>p+p]:mt-4 [&_p]:whitespace-pre-line [&_li]:whitespace-pre-line [&_td]:whitespace-pre-line [&_th]:whitespace-pre-line",
         className
       )}
       plugins={streamdownPlugins}

@@ -2,6 +2,7 @@ import type { StateCreator } from "zustand";
 import { nanoid } from "nanoid";
 import type {
   AgentResponse,
+  ChatActionPayload,
   ChatAttachmentPayload,
   ChatSessionKind,
   ChatStore,
@@ -29,6 +30,8 @@ import {
   upsertSessionSummary,
   withToolExecutions,
 } from "./runtime";
+
+const productionRestartInFlight = new Set<string>();
 
 const SKILL_DIRECTIVE_RE = /(^|\s)@([a-z][a-z0-9-]*)(?=\s|$)/gi;
 
@@ -732,6 +735,23 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
           })),
         }));
       }
+    }
+  },
+
+  restartProductionTask: async (sessionId, details) => {
+    if (productionRestartInFlight.has(sessionId)) return;
+    const session = get().sessions[sessionId];
+    if (!session || session.isStreaming || session.isChatStreaming) return;
+    productionRestartInFlight.add(sessionId);
+    try {
+      await get().sendMessage(sessionId, details.instruction, {
+        sessionKind: "book-create",
+        actionSource: "button",
+        requestedIntent: "create_book",
+        actionPayload: details.actionPayload,
+      });
+    } finally {
+      productionRestartInFlight.delete(sessionId);
     }
   },
 

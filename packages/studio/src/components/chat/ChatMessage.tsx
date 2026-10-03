@@ -25,11 +25,11 @@ export const ChatMessage = memo(function ChatMessage({
     <Message from={role}>
       <MessageContent>
         {isUser ? (
-          <div className="text-[17px] leading-[1.72]">{content}</div>
+          <div className="whitespace-pre-wrap break-words text-[17px] leading-[1.72]">{content}</div>
         ) : isError ? (
           <div className="flex items-center gap-2 text-[17px] leading-[1.72] text-destructive">
             <XCircle size={14} className="shrink-0" />
-            <span>{content.replace(/^\u2717\s*/, "")}</span>
+            <span className="whitespace-pre-wrap break-words">{content.replace(/^\u2717\s*/, "")}</span>
           </div>
         ) : (
           <MessageResponse>{content}</MessageResponse>
